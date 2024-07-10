@@ -1,0 +1,8 @@
+[package]
+name = "glow"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+burn = { version = "0.13.2", features = ["tch", "autodiff"] }
+tch = "*"
