@@ -1,56 +1,67 @@
 {
-  description = "Rust flake with nightly and CUDA 12.1 support";
   inputs = {
-    flake-utils.url = "github:numtide/flake-utils";
-    rust-overlay.url = "github:oxalica/rust-overlay";
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-parts = {
+      url = "github:hercules-ci/flake-parts";
+      inputs.nixpkgs-lib.follows = "nixpkgs";
+    };
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
-  outputs = { self, flake-utils, rust-overlay, nixpkgs }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let
-        overlays = [ (import rust-overlay) ];
-        pkgs = (import nixpkgs) {
+
+  outputs = { nixpkgs, ... } @ inputs:
+    inputs.flake-parts.lib.mkFlake { inherit inputs; } {
+      systems = ["x86_64-linux"];
+      perSystem = { config, system, lib, ... }: let
+        overlays = [
+          (import inputs.rust-overlay)
+        ];
+        pkgs = import nixpkgs {
           inherit system overlays;
-          config.allowUnfree = true; # Needed for CUDA
+          config = {
+            allowUnfree = true;
+            cudaSupport = true;
+          };
         };
-      in
-      with pkgs;
-      {
-        devShells.default = mkShell rec {
-          nativeBuildInputs = [
-            (rust-bin.stable.latest.default.override {
-              extensions = [ "rust-analyzer" "clippy" "rust-src" ];
-            })
-            cudaPackages.cuda_12_1
-            wget
-            unzip
-          ];
-          buildInputs = [
-            udev alsa-lib vulkan-loader
-            vulkan-tools vulkan-headers vulkan-validation-layers
+        # Set the CUDA version to match libtorch's CUDA version
+        cudaVersion = "12.1";
+        cudaPkg = pkgs.cudaPackages_12_1.cudatoolkit;
+        libtorch = pkgs.libtorch-bin.override { cudaSupport = true; };
+      in {
+        devShells.default = pkgs.mkShell rec {
+          packages = with pkgs; [
             pkg-config
-            xorg.libX11 xorg.libXcursor xorg.libXi xorg.libXrandr
-            libxkbcommon wayland
+            openssl
+            glxinfo
+            vscode-extensions.llvm-org.lldb-vscode
+            taplo
+            mdbook
+            glib-networking
+            cudaPkg
+            cudaPackages.cudnn
+            rust-bin.stable.latest.default
+            typos
+            libxkbcommon
+            libGL
+            wayland
+            vulkan-tools
+            vulkan-loader
+            python311Packages.onnx
+            libtorch          # Runtime libraries
+            libtorch.dev      # Development files (headers)
           ];
-          LD_LIBRARY_PATH = lib.makeLibraryPath buildInputs;
-          VULKAN_SDK = "${vulkan-headers}";
-          VK_LAYER_PATH = "${vulkan-validation-layers}/share/vulkan/explicit_layer.d";
-          
-          # CUDA and LibTorch specific configurations
-          CUDA_PATH = "${cudaPackages.cuda_12_1}";
-          LIBTORCH = "$HOME/.local/lib/libtorch";
-          
-          shellHook = ''
-            export LD_LIBRARY_PATH=${LIBTORCH}/lib:$LD_LIBRARY_PATH
-            
-            if [ ! -d "${LIBTORCH}" ]; then
-              echo "Downloading and extracting LibTorch..."
-              wget -O libtorch.zip https://download.pytorch.org/libtorch/cu121/libtorch-cxx11-abi-shared-with-deps-2.2.0%2Bcu121.zip
-              unzip libtorch.zip -d ${LIBTORCH}
-              rm libtorch.zip
-            fi
-          '';
+          LD_LIBRARY_PATH = "${lib.makeLibraryPath packages}";
+          # Set TORCH_CUDA_VERSION to match the CUDA version
+          TORCH_CUDA_VERSION = "cu${builtins.replaceStrings ["." ] ["" ] cudaVersion}";
+          PATH = "~/.cargo/bin:$PATH";
+          # Point LIBTORCH to the dev output (includes headers)
+          LIBTORCH = "${libtorch}";
+          # Set CXXFLAGS to include header paths
+          CXXFLAGS = "-I${libtorch.dev}/include -I${libtorch.dev}/include/torch/csrc/api/include";
         };
-      }
-    );
+        formatter = pkgs.alejandra;
+      };
+    };
 }
