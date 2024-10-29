@@ -25,11 +25,11 @@ fn main() {
     let batcher_train = BouncingBallBatcher::<LibTorch>::new(LibTorchDevice::Cpu);
 
     let dataloader_train = DataLoaderBuilder::new(batcher_train)
-        .batch_size(1)
+        .batch_size(2)
         .shuffle(0)
         .num_workers(1)
         .build(BouncingBallDataset::train());
     let item = dataloader_train.iter().next();
-    // println!("{:?}", item);
+    println!("{:?}", item);
     // read_npz_file();
 }

@@ -25,7 +25,7 @@ type BallDataset = InMemDataset<BouncingBallItem>;
 pub struct BouncingBallDataset {
     dataset: BallDataset,
 }
-
+#[derive(Clone, Debug)]
 pub struct BouncingBallBatcher<B: Backend> {
     device: B::Device,
 }
@@ -41,7 +41,7 @@ impl<B: Backend> Batcher<BouncingBallItem, BouncingBallBatch<B>> for BouncingBal
             })
             .map(|item_nd| {
                 Tensor::<B, 5>::from_data(item_nd.into_data(), &self.device)
-                    .permute([0, 1, 4, 2, 3])
+                    .permute([4, 0, 3, 1, 2])
                 // shape (B, T, C, H,  W)
             })
             .collect();
