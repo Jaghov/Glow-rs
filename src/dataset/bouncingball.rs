@@ -35,13 +35,14 @@ impl<B: Backend> Batcher<BouncingBallItem, BouncingBallBatch<B>> for BouncingBal
         let image_sequence = items
             .iter()
             .map(|item| {
-                Tensor::<NdArray, 5>::from_primitive(TensorPrimitive::Float(NdArrayTensor::new(
+                Tensor::<NdArray, 4>::from_primitive(TensorPrimitive::Float(NdArrayTensor::new(
                     item.image_sequence.clone().into_dyn().into_shared(),
                 )))
+                .unsqueeze::<5>()
             })
             .map(|item_nd| {
                 Tensor::<B, 5>::from_data(item_nd.into_data(), &self.device)
-                    .permute([4, 0, 3, 1, 2])
+                    .permute([0, 1, 4, 2, 3])
                 // shape (B, T, C, H,  W)
             })
             .collect();
