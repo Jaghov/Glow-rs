@@ -1680,6 +1680,7 @@ name = "glow"
 version = "0.1.0"
 dependencies = [
  "burn",
+ "image",
  "ndarray 0.16.1",
  "ndarray-npz",
  "serde",

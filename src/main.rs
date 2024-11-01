@@ -23,8 +23,7 @@ fn main() {
     // Print the element-wise addition of the two tensors.
     println!("{}", tensor_1 + tensor_2);
 
-    let dataset = CelebADataset::train();
-    dbg!(dataset.get(0));
+    let dataset = CelebADataset::test();
 
     // let batcher_train = BouncingBallBatcher::<LibTorch>::new(LibTorchDevice::Cpu);
 
