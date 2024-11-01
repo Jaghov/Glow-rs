@@ -25,6 +25,20 @@ type BallDataset = InMemDataset<BouncingBallItem>;
 pub struct BouncingBallDataset {
     dataset: BallDataset,
 }
+
+/// Passed dataloader builder along with dataset to return a dataloader for training
+/// ```
+/// # Example use
+/// let batcher_train = BouncingBallBatcher::<LibTorch>::new(LibTorchDevice::Cpu);
+///
+/// let dataloader_train = DataLoaderBuilder::new(batcher_train)
+///     .batch_size(2)
+///     .shuffle(0)
+///     .num_workers(1)
+///     .build(BouncingBallDataset::train());
+/// let item = dataloader_train.iter().next();
+/// println!("{:?}", item);
+/// ````
 #[derive(Clone, Debug)]
 pub struct BouncingBallBatcher<B: Backend> {
     device: B::Device,
@@ -86,20 +100,6 @@ impl BouncingBallDataset {
     }
 }
 
-pub fn read_npz_file() {
-    let mut file_iterator = read_dir("data/images_train_N_5000_T_100_dim_latent_2_dim_obs_2_resolution_32_state_3_sparsity_0.0_net_cosine_seed_24/").unwrap();
-    // println!("{:?}", file_iterator.unwrap());
-    let Some(Ok(sequence)) = file_iterator.next() else {
-        return;
-    };
-    let mut npz = NpzReader::new(File::open(sequence.path()).unwrap()).unwrap();
-
-    let a1: Array4<f64> = npz.by_index(0).unwrap();
-    let a2: Array4<f32> = a1.mapv(|x| x as f32);
-
-    println!("{:?}", a2);
-}
-
 impl Dataset<BouncingBallItem> for BouncingBallDataset {
     fn get(&self, index: usize) -> Option<BouncingBallItem> {
         self.dataset.get(index)
@@ -109,3 +109,25 @@ impl Dataset<BouncingBallItem> for BouncingBallDataset {
         self.dataset.len()
     }
 }
+
+// pub fn read_npz_file() {
+//     let mut file_iterator = read_dir("data/images_train_N_5000_T_100_dim_latent_2_dim_obs_2_resolution_32_state_3_sparsity_0.0_net_cosine_seed_24/").unwrap();
+//     // println!("{:?}", file_iterator.unwrap());
+//     let Some(Ok(sequence)) = file_iterator.next() else {
+//         return;
+//     };
+//     let mut npz = NpzReader::new(File::open(sequence.path()).unwrap()).unwrap();
+
+//     let a1: Array4<f64> = npz.by_index(0).unwrap();
+//     let a2: Array4<f32> = a1.mapv(|x| x as f32);
+
+//     println!("{:?}", a2);
+// }
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+
+//     #[test]
+//     fn can_read() {}
+// }

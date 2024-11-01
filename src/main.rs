@@ -2,8 +2,9 @@ mod dataset;
 
 use burn::backend::libtorch::{LibTorch, LibTorchDevice};
 use burn::data::dataloader::DataLoaderBuilder;
+use burn::data::dataset::Dataset;
 use burn::tensor::Tensor;
-use dataset::{BouncingBallBatcher, BouncingBallDataset};
+use dataset::CelebADataset;
 
 fn main() {
     println!("number of devices: {}", tch::Cuda::device_count());
@@ -22,14 +23,17 @@ fn main() {
     // Print the element-wise addition of the two tensors.
     println!("{}", tensor_1 + tensor_2);
 
-    let batcher_train = BouncingBallBatcher::<LibTorch>::new(LibTorchDevice::Cpu);
+    let dataset = CelebADataset::train();
+    dbg!(dataset.get(0));
 
-    let dataloader_train = DataLoaderBuilder::new(batcher_train)
-        .batch_size(2)
-        .shuffle(0)
-        .num_workers(1)
-        .build(BouncingBallDataset::train());
-    let item = dataloader_train.iter().next();
-    println!("{:?}", item);
+    // let batcher_train = BouncingBallBatcher::<LibTorch>::new(LibTorchDevice::Cpu);
+
+    // let dataloader_train = DataLoaderBuilder::new(batcher_train)
+    //     .batch_size(2)
+    //     .shuffle(0)
+    //     .num_workers(1)
+    //     .build(BouncingBallDataset::train());
+    // let item = dataloader_train.iter().next();
+    // println!("{:?}", item);
     // read_npz_file();
 }

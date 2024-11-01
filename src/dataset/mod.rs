@@ -1,5 +1,6 @@
 mod bouncingball;
-mod cifar10;
+mod celeba;
 
 // flatten
 pub use bouncingball::*;
+pub use celeba::*;
