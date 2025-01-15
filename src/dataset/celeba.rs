@@ -1,6 +1,4 @@
-use std::io::BufReader;
 use std::io::Cursor;
-use std::path::PathBuf;
 
 use burn::data::dataset::transform::Mapper;
 use burn::data::dataset::transform::MapperDataset;
@@ -10,8 +8,6 @@ use burn::data::dataset::SqliteDataset;
 use burn::prelude::*;
 use image::codecs::png::PngDecoder;
 use image::ImageDecoder;
-use image::ImageFormat;
-use image::ImageReader;
 use serde::Deserialize;
 
 const WIDTH: usize = 128;
@@ -39,14 +35,14 @@ impl<B: Backend> CelebABatcher<B> {
     }
 }
 
-pub fn load_raw_dataset() -> SqliteDataset<CelebAItemRaw> {
-    let dataset: SqliteDataset<CelebAItemRaw> =
-        HuggingfaceDatasetLoader::new("tglcourse/CelebA-faces-cropped-128")
-            .with_base_dir("dataset/celeba")
-            .dataset("test")
-            .unwrap();
-    dataset
-}
+// pub fn load_raw_dataset() -> SqliteDataset<CelebAItemRaw> {
+//     let dataset: SqliteDataset<CelebAItemRaw> =
+//         HuggingfaceDatasetLoader::new("tglcourse/CelebA-faces-cropped-128")
+//             .with_base_dir("dataset/celeba")
+//             .dataset("test")
+//             .unwrap();
+//     dataset
+// }
 // Bytes to image
 // Bytes to image
 struct BytesToImage;

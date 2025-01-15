@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-burn = { version = "0.15.0", features = ["tch", "autodiff", "dataset", "ndarray"] }
+burn = { version = "0.16", features = ["tch", "autodiff", "dataset", "ndarray"] }
 ndarray = "0.16.1"
 ndarray-npz = "0.3.0"
 serde = "1.0.214"

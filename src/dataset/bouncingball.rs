@@ -1,5 +1,8 @@
 use burn::{
-    backend::{ndarray::NdArrayTensor, NdArray},
+    backend::{
+        ndarray::{NdArrayTensor, NdArrayTensorFloat},
+        NdArray,
+    },
     data::{
         dataloader::batcher::Batcher,
         dataset::{Dataset, InMemDataset},
@@ -48,19 +51,17 @@ impl<B: Backend> Batcher<BouncingBallItem, BouncingBallBatch<B>> for BouncingBal
     fn batch(&self, items: Vec<BouncingBallItem>) -> BouncingBallBatch<B> {
         let image_sequence = items
             .iter()
-            .map(|item| {
-                Tensor::<NdArray, 4>::from_primitive(TensorPrimitive::Float(NdArrayTensor::new(
-                    item.image_sequence.clone().into_dyn().into_shared(),
-                )))
-                .unsqueeze::<5>()
-            })
-            .map(|item_nd| {
-                Tensor::<B, 5>::from_data(item_nd.into_data(), &self.device)
-                    .permute([0, 1, 4, 2, 3])
-                // shape (B, T, C, H,  W)
+            .map(|data| {
+                Tensor::<NdArray, 5>::from_primitive(TensorPrimitive::Float(
+                    NdArrayTensorFloat::F32(NdArrayTensor {
+                        array: data.image_sequence.clone().into_dyn().into_shared(),
+                    }),
+                ))
+                .permute([0, 1, 4, 2, 3])
             })
             .collect();
         let image_sequences = Tensor::cat(image_sequence, 0);
+        let image_sequences = Tensor::<B, 5>::from_data(image_sequences.into_data(), &self.device);
 
         BouncingBallBatch { image_sequences }
     }
