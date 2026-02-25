@@ -1,12 +1,12 @@
 [package]
-name = "glow"
+name = "glow-rs"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-burn = { version = "0.16", features = ["tch", "autodiff", "dataset", "ndarray"] }
-ndarray = "0.16.1"
-ndarray-npz = "0.3.0"
-serde = "1.0.214"
-tch = "0.15.0"
+burn = { workspace = true, features = ["tch", "autodiff", "dataset", "ndarray"] }
 image = "*"
+ndarray = "0.16.1"
+ndarray-npz = "0.4.2"
+serde = "1.0.219"
+# tch = {workspace = true}

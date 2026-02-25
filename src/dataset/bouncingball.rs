@@ -7,7 +7,7 @@ use burn::{
         dataloader::batcher::Batcher,
         dataset::{Dataset, InMemDataset},
     },
-    tensor::{backend::Backend, Tensor, TensorPrimitive},
+    tensor::{backend::Backend, Device, Tensor, TensorPrimitive},
 };
 use ndarray::Array4;
 use ndarray_npz::NpzReader;
@@ -47,8 +47,8 @@ pub struct BouncingBallBatcher<B: Backend> {
     device: B::Device,
 }
 
-impl<B: Backend> Batcher<BouncingBallItem, BouncingBallBatch<B>> for BouncingBallBatcher<B> {
-    fn batch(&self, items: Vec<BouncingBallItem>) -> BouncingBallBatch<B> {
+impl<B: Backend> Batcher<B, BouncingBallItem, BouncingBallBatch<B>> for BouncingBallBatcher<B> {
+    fn batch(&self, items: Vec<BouncingBallItem>, device: &Device<B>) -> BouncingBallBatch<B> {
         let image_sequence = items
             .iter()
             .map(|data| {

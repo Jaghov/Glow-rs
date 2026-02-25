@@ -7,12 +7,12 @@ use burn::tensor::Tensor;
 use dataset::CelebADataset;
 
 fn main() {
-    println!("number of devices: {}", tch::Cuda::device_count());
-    println!("{}", tch::Cuda::cudnn_is_available());
-    assert!(
-        tch::utils::has_cuda(),
-        "Could not detect valid CUDA configuration"
-    );
+    // println!("number of devices: {}", tch::Cuda::device_count());
+    // println!("{}", tch::Cuda::cudnn_is_available());
+    // assert!(
+    //     tch::utils::has_cuda(),
+    //     "Could not detect valid CUDA configuration"
+    // );
 
     let device = LibTorchDevice::Cuda(0);
 
