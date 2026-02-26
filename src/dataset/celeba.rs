@@ -1,5 +1,6 @@
 use std::io::Cursor;
 
+use burn::data::dataloader::batcher::Batcher;
 use burn::data::dataset::transform::Mapper;
 use burn::data::dataset::transform::MapperDataset;
 use burn::data::dataset::Dataset;
@@ -22,9 +23,32 @@ pub struct CelebAItemRaw {
 
 #[derive(Debug, Clone)]
 pub struct CelebAItem {
-    pub image: [[[f32; WIDTH]; HEIGHT]; CHANNELS],
+    pub image: [[[u8; WIDTH]; HEIGHT]; CHANNELS],
 }
 
+#[derive(Debug, Clone)]
+pub struct CelebABatch<B: Backend> {
+    pub images: Tensor<B, 4, Int>,
+}
+
+/// Passed dataloader builder along with dataset to return a dataloader for training
+/// # Example use
+/// ```
+/// use burn::{
+///     backend::libtorch::{LibTorch, LibTorchDevice},
+///     data::dataloader::DataLoaderBuilder,
+/// };
+/// use glow_rs::dataset::*;
+/// let batcher_train = CelebABatcher::<LibTorch>::new(LibTorchDevice::Cuda(0));
+///
+/// let dataloader_train = DataLoaderBuilder::new(batcher_train)
+///     .batch_size(2)
+///     .shuffle(0)
+///     .num_workers(1)
+///     .build(CelebADataset::train());
+/// let item = dataloader_train.iter().next();
+/// println!("{:?}", item);
+/// ````
 pub struct CelebABatcher<B: Backend> {
     device: B::Device,
 }
@@ -35,16 +59,18 @@ impl<B: Backend> CelebABatcher<B> {
     }
 }
 
-// pub fn load_raw_dataset() -> SqliteDataset<CelebAItemRaw> {
-//     let dataset: SqliteDataset<CelebAItemRaw> =
-//         HuggingfaceDatasetLoader::new("tglcourse/CelebA-faces-cropped-128")
-//             .with_base_dir("dataset/celeba")
-//             .dataset("test")
-//             .unwrap();
-//     dataset
-// }
-// Bytes to image
-// Bytes to image
+impl<B: Backend> Batcher<B, CelebAItem, CelebABatch<B>> for CelebABatcher<B> {
+    fn batch(&self, items: Vec<CelebAItem>, device: &B::Device) -> CelebABatch<B> {
+        let images = items
+            .into_iter()
+            .map(|item| Tensor::<B, 3, Int>::from_data(item.image, device).unsqueeze_dim::<4>(0))
+            .collect();
+        let batch = Tensor::cat(images, 0);
+
+        CelebABatch { images: batch }
+    }
+}
+
 struct BytesToImage;
 
 impl Mapper<CelebAItemRaw, CelebAItem> for BytesToImage {
@@ -59,12 +85,12 @@ impl Mapper<CelebAItemRaw, CelebAItem> for BytesToImage {
         debug_assert_eq!(img.len(), WIDTH * HEIGHT * CHANNELS);
 
         // Convert the image to a 2D array of floats.
-        let mut image_array = [[[0f32; WIDTH]; HEIGHT]; CHANNELS];
+        let mut image_array = [[[0u8; WIDTH]; HEIGHT]; CHANNELS];
         for (i, pixel) in img.iter().enumerate() {
             let color = i % CHANNELS;
             let x = (i / CHANNELS) % WIDTH;
             let y = (i / CHANNELS) / HEIGHT;
-            image_array[color][y][x] = *pixel as f32;
+            image_array[color][y][x] = *pixel as u8;
         }
 
         CelebAItem { image: image_array }
@@ -88,7 +114,7 @@ impl CelebADataset {
     fn new(split: &str) -> Self {
         let dataset: SqliteDataset<CelebAItemRaw> =
             HuggingfaceDatasetLoader::new("tglcourse/CelebA-faces-cropped-128")
-                .with_base_dir("dataset/celeba")
+                .with_base_dir("data/celeba")
                 .dataset(split)
                 .unwrap();
         let dataset = MapperDataset::new(dataset, BytesToImage);
@@ -106,8 +132,3 @@ impl Dataset<CelebAItem> for CelebADataset {
         self.dataset.len()
     }
 }
-// struct CelebAItem
-
-// Impl mapper from Item Raw to Item
-
-// Finally a CelebA dataset
