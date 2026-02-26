@@ -1,13 +1,10 @@
 use burn::{
-    backend::{
-        ndarray::{NdArrayTensor, NdArrayTensorFloat},
-        NdArray,
-    },
+    backend::libtorch::LibTorchDevice,
     data::{
         dataloader::batcher::Batcher,
         dataset::{Dataset, InMemDataset},
     },
-    tensor::{backend::Backend, Device, Tensor, TensorPrimitive},
+    tensor::{backend::Backend, Device, Shape, Tensor, TensorData, TensorPrimitive},
 };
 use ndarray::Array4;
 use ndarray_npz::NpzReader;
@@ -30,8 +27,13 @@ pub struct BouncingBallDataset {
 }
 
 /// Passed dataloader builder along with dataset to return a dataloader for training
-/// ```
 /// # Example use
+/// ```
+/// use burn::{
+///     backend::libtorch::{LibTorch, LibTorchDevice},
+///     data::dataloader::DataLoaderBuilder,
+/// };
+/// use glow_rs::dataset::*;
 /// let batcher_train = BouncingBallBatcher::<LibTorch>::new(LibTorchDevice::Cpu);
 ///
 /// let dataloader_train = DataLoaderBuilder::new(batcher_train)
@@ -52,12 +54,16 @@ impl<B: Backend> Batcher<B, BouncingBallItem, BouncingBallBatch<B>> for Bouncing
         let image_sequence = items
             .iter()
             .map(|data| {
-                Tensor::<NdArray, 5>::from_primitive(TensorPrimitive::Float(
-                    NdArrayTensorFloat::F32(NdArrayTensor {
-                        array: data.image_sequence.clone().into_dyn().into_shared(),
-                    }),
-                ))
-                .permute([0, 1, 4, 2, 3])
+                let shape = data.image_sequence.shape().to_vec();
+                Tensor::<B, 4>::from_floats(
+                    TensorData::new(
+                        data.image_sequence.clone().into_raw_vec_and_offset().0,
+                        Shape::from(shape),
+                    ),
+                    device,
+                )
+                .permute([0, 3, 1, 2])
+                .unsqueeze_dim::<5>(0)
             })
             .collect();
         let image_sequences = Tensor::cat(image_sequence, 0);
@@ -82,7 +88,8 @@ impl BouncingBallDataset {
     }
 
     pub fn new(split: &str) -> Self {
-        let file_iterator = read_dir(format!("data/images_{split}_N_5000_T_100_dim_latent_2_dim_obs_2_resolution_32_state_3_sparsity_0.0_net_cosine_seed_24/" )).unwrap();
+        // let file_iterator = read_dir(format!("data/images_{split}_N_5000_T_100_dim_latent_2_dim_obs_2_resolution_32_state_3_sparsity_0.0_net_cosine_seed_24/" )).unwrap();
+        let file_iterator = read_dir(format!("data/")).unwrap();
 
         let items: Vec<_> = file_iterator
             .filter_map(|f| f.ok())
