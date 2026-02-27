@@ -71,7 +71,10 @@ impl<B: Backend> Batcher<B, CelebAItem, CelebABatch<B>> for CelebABatcher<B> {
     }
 }
 
-struct BytesToImage;
+#[derive(Clone)]
+struct BytesToImage {
+    quantize_factor: u8,
+}
 
 impl Mapper<CelebAItemRaw, CelebAItem> for BytesToImage {
     /// Convert a raw MNIST item (image bytes) to a MNIST item (2D array image).
@@ -84,13 +87,15 @@ impl Mapper<CelebAItemRaw, CelebAItem> for BytesToImage {
         // Ensure the image dimensions are correct.
         debug_assert_eq!(img.len(), WIDTH * HEIGHT * CHANNELS);
 
-        // Convert the image to a 2D array of floats.
+        // Convert the image to a 2D array of ints.
         let mut image_array = [[[0u8; WIDTH]; HEIGHT]; CHANNELS];
-        for (i, pixel) in img.iter().enumerate() {
+        for (i, &pixel) in img.iter().enumerate() {
             let color = i % CHANNELS;
             let x = (i / CHANNELS) % WIDTH;
             let y = (i / CHANNELS) / HEIGHT;
-            image_array[color][y][x] = *pixel as u8;
+
+            // Quantize elements
+            image_array[color][y][x] = pixel as u8;
         }
 
         CelebAItem { image: image_array }
@@ -101,6 +106,7 @@ type MappedDataset = MapperDataset<SqliteDataset<CelebAItemRaw>, BytesToImage, C
 
 pub struct CelebADataset {
     dataset: MappedDataset,
+    transformation: BytesToImage,
 }
 
 impl CelebADataset {
@@ -117,9 +123,13 @@ impl CelebADataset {
                 .with_base_dir("data/celeba")
                 .dataset(split)
                 .unwrap();
-        let dataset = MapperDataset::new(dataset, BytesToImage);
+        let map = BytesToImage { quantize_factor: 2 };
+        let dataset = MapperDataset::new(dataset, map.clone());
 
-        CelebADataset { dataset }
+        CelebADataset {
+            dataset,
+            transformation: map,
+        }
     }
 }
 
