@@ -1,10 +1,9 @@
 use burn::{
-    backend::libtorch::LibTorchDevice,
     data::{
         dataloader::batcher::Batcher,
         dataset::{Dataset, InMemDataset},
     },
-    tensor::{backend::Backend, Device, Shape, Tensor, TensorData, TensorPrimitive},
+    tensor::{backend::Backend, Device, Shape, Tensor, TensorData},
 };
 use ndarray::Array4;
 use ndarray_npz::NpzReader;

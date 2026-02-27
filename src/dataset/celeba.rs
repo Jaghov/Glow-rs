@@ -89,13 +89,13 @@ impl Mapper<CelebAItemRaw, CelebAItem> for BytesToImage {
 
         // Convert the image to a 2D array of ints.
         let mut image_array = [[[0u8; WIDTH]; HEIGHT]; CHANNELS];
-        for (i, &pixel) in img.iter().enumerate() {
+        for (i, pixel) in img.iter().enumerate() {
             let color = i % CHANNELS;
             let x = (i / CHANNELS) % WIDTH;
             let y = (i / CHANNELS) / HEIGHT;
 
-            // Quantize elements
-            image_array[color][y][x] = pixel as u8;
+            let quantized_pixel = self.quantize_factor;
+            image_array[color][y][x] = *pixel as u8;
         }
 
         CelebAItem { image: image_array }

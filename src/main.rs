@@ -2,37 +2,49 @@ mod dataset;
 
 use burn::backend::libtorch::{LibTorch, LibTorchDevice};
 use burn::data::dataloader::DataLoaderBuilder;
-use burn::data::dataset::Dataset;
 use burn::tensor::Tensor;
-use dataset::CelebADataset;
+use dataset::celeba::CelebABatcher;
 
-fn main() {
-    // println!("number of devices: {}", tch::Cuda::device_count());
-    // println!("{}", tch::Cuda::cudnn_is_available());
-    // assert!(
-    //     tch::utils::has_cuda(),
-    //     "Could not detect valid CUDA configuration"
-    // );
+use dataset::celeba::CelebADataset;
+use rerun::external::crossbeam::epoch::Pointable;
 
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device = LibTorchDevice::Cuda(0);
 
-    // Creation of two tensors, the first with explicit values and the second one with ones, with the same shape as the first
-    let tensor_1 = Tensor::<LibTorch<f32>, 2>::from_data([[2., 3.], [4., 5.]], &device);
-    let tensor_2 = Tensor::ones_like(&tensor_1);
+    let batch_size = 6;
 
-    // Print the element-wise addition of the two tensors.
-    println!("{}", tensor_1 + tensor_2);
+    let rec = rerun::RecordingStreamBuilder::new("rerun_example_image")
+        .enabled(true)
+        .spawn()?;
 
-    let dataset = CelebADataset::test();
+    let batcher_train = CelebABatcher::<LibTorch>::new(device);
+    let dataloader = DataLoaderBuilder::new(batcher_train)
+        .batch_size(batch_size)
+        .shuffle(0)
+        .num_workers(1)
+        .build(CelebADataset::test());
 
-    // let batcher_train = BouncingBallBatcher::<LibTorch>::new(LibTorchDevice::Cpu);
+    let batch = dataloader.iter().next().unwrap().images;
+    let [t, .., c, h, w] = batch.dims();
 
-    // let dataloader_train = DataLoaderBuilder::new(batcher_train)
-    //     .batch_size(2)
-    //     .shuffle(0)
-    //     .num_workers(1)
-    //     .build(BouncingBallDataset::train());
-    // let item = dataloader_train.iter().next();
-    // println!("{:?}", item);
-    // read_npz_file();
+    let data = batch.clone().permute([0, 2, 3, 1]).to_data();
+    let item = data
+        .convert_dtype(burn::tensor::DType::U8)
+        .into_vec()
+        .unwrap();
+    for i in 0..batch_size {
+        let start = i * h * w * c;
+        let end = start + h * w * c;
+
+        let img = rerun::Image::from_rgb24(item[start..end].to_vec(), [w as u32, h as u32]);
+
+        rec.log(format!("image{}", i), &img)?;
+    }
+    // Compute the size
+
+    // let image = rerun::Image::from_rgb24(item, [h as u32, w as u32]);
+
+    // rec.log("image", &image)?;
+
+    Ok(())
 }
