@@ -11,7 +11,7 @@ use std::fs::{read_dir, File};
 
 #[derive(Clone, Debug)]
 pub struct BouncingBallBatch<B: Backend> {
-    image_sequences: Tensor<B, 5>,
+    pub image_sequences: Tensor<B, 5>,
 }
 
 #[derive(Clone, Debug)]
@@ -99,6 +99,8 @@ impl BouncingBallDataset {
                 Some(BouncingBallItem { image_sequence: a1 })
             })
             .collect();
+
+        println!("{}", items[0].image_sequence.first().unwrap());
 
         let dataset = InMemDataset::new(items);
         // let dataset = ShuffledDataset::new(dataset,);
