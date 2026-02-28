@@ -10,4 +10,5 @@ ndarray = "0.16.1"
 ndarray-npz = "0.4.2"
 serde = "1.0.219"
 rerun = {version = "0.30", features = ["run", "native_viewer"]}
+rstest = "0.26.1"
 # tch = {workspace = true}

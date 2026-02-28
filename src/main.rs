@@ -1,6 +1,7 @@
 use burn::backend::libtorch::{LibTorch, LibTorchDevice};
 use burn::data::dataloader::DataLoaderBuilder;
 use burn::prelude::Backend;
+use burn::Tensor;
 use glow_rs::dataset::{
     bouncingball::BouncingBallBatcher,
     celeba::{CelebABatcher, CelebADataset},
@@ -107,3 +108,12 @@ fn view_bball<B: Backend>(
 
     Ok(())
 }
+
+// fn tensor_to_image<B: Backend>(tensor: Tensor<B, 4>) -> Vec<u8> {
+//     let data = tensor.permute([0, 2, 3, 1]).to_data();
+//     let buffer = data
+//         .convert_dtype(burn::tensor::DType::U8)
+//         .into_vec()
+//         .unwrap();
+//     buffer
+// }
