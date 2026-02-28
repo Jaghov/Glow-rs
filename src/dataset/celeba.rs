@@ -199,8 +199,8 @@ impl Mapper<CelebAItemRaw, CelebAItem> for BytesToImage {
             let y = (i / CHANNELS) / HEIGHT;
 
             // TODO: apply quantize_factor here (currently unused).
-            let quantized_pixel = self.quantize_factor;
-            image_array[color][y][x] = *pixel as u8;
+            let _quantized_pixel = self.quantize_factor;
+            image_array[color][y][x] = *pixel;
         }
 
         CelebAItem { image: image_array }

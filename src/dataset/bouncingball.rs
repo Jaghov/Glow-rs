@@ -86,10 +86,9 @@ impl BouncingBallDataset {
         Self::new("test")
     }
 
-    pub fn new(split: &str) -> Self {
+    pub fn new(_split: &str) -> Self {
         // let file_iterator = read_dir(format!("data/bouncingball/images_{split}_N_5000_T_100_dim_latent_2_dim_obs_2_resolution_32_state_3_sparsity_0.0_net_cosine_seed_24/" )).unwrap();
-        let file_iterator =
-            read_dir(format!("data/bouncingball")).expect("cannot access bball directory");
+        let file_iterator = read_dir("data/bouncingball").expect("cannot access bball directory");
 
         let items: Vec<_> = file_iterator
             .filter_map(|f| f.ok())

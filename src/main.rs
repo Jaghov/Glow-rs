@@ -44,7 +44,7 @@ fn view_celeb<B: Backend>(device: &B::Device, rec: &rerun::RecordingStream) {
         .next()
         .expect("should be non-empty")
         .images;
-    let [t, .., c, h, w] = batch.dims();
+    let [_t, .., c, h, w] = batch.dims();
 
     let data = batch.clone().permute([0, 2, 3, 1]).to_data();
     let buffer = data
@@ -77,7 +77,7 @@ fn view_bball<B: Backend>(
         .next()
         .expect("should be non-empty")
         .image_sequences;
-    let [b, t, c, h, w] = batch.dims();
+    let [_b, t, c, h, w] = batch.dims();
 
     let time: Vec<i64> = (0..t as i64).collect();
     let timeline = TimeColumn::new_sequence("time", time);
