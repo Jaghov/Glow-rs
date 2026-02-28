@@ -1,13 +1,14 @@
-mod dataset;
-
 use burn::backend::libtorch::{LibTorch, LibTorchDevice};
 use burn::data::dataloader::DataLoaderBuilder;
 use burn::prelude::Backend;
-use dataset::celeba::CelebABatcher;
+use glow_rs::dataset::{
+    bouncingball::BouncingBallBatcher,
+    celeba::{CelebABatcher, CelebADataset},
+};
 
-use dataset::celeba::CelebADataset;
-use glow_rs::dataset::{BouncingBallBatcher, BouncingBallDataset};
 use rerun::TimeColumn;
+
+use glow_rs::dataset::bouncingball::BouncingBallDataset;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device = LibTorchDevice::Cuda(0);
@@ -83,7 +84,7 @@ fn view_bball<B: Backend>(
 
     let format = rerun::components::ImageFormat::rgb8([w as u32, h as u32]);
     rec.log_static("images", &rerun::Image::update_fields().with_format(format))?;
-    let batch = batch * 256;
+    let batch = batch * 256; // Rescale intensity from [0,1] back to [0, 255]
 
     let data = batch
         .clone()

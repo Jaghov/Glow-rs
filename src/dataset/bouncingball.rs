@@ -1,3 +1,21 @@
+//! Passed dataloader builder along with dataset to return a dataloader for training
+//! # Example use
+//! ```
+//! use burn::{
+//!     backend::libtorch::{LibTorch, LibTorchDevice},
+//!     data::dataloader::DataLoaderBuilder,
+//! };
+//! use glow_rs::dataset::*;
+//! let batcher_train = BouncingBallBatcher::<LibTorch>::new(LibTorchDevice::Cuda(0));
+//!
+//! let dataloader_train = DataLoaderBuilder::new(batcher_train)
+//!     .batch_size(2)
+//!     .shuffle(0)
+//!     .num_workers(1)
+//!     .build(BouncingBallDataset::train());
+//! let item = dataloader_train.iter().next();
+//! println!("{:?}", item);
+//! ```
 use burn::{
     data::{
         dataloader::batcher::Batcher,
@@ -25,24 +43,6 @@ pub struct BouncingBallDataset {
     dataset: BallDataset,
 }
 
-/// Passed dataloader builder along with dataset to return a dataloader for training
-/// # Example use
-/// ```
-/// use burn::{
-///     backend::libtorch::{LibTorch, LibTorchDevice},
-///     data::dataloader::DataLoaderBuilder,
-/// };
-/// use glow_rs::dataset::*;
-/// let batcher_train = BouncingBallBatcher::<LibTorch>::new(LibTorchDevice::Cuda(0));
-///
-/// let dataloader_train = DataLoaderBuilder::new(batcher_train)
-///     .batch_size(2)
-///     .shuffle(0)
-///     .num_workers(1)
-///     .build(BouncingBallDataset::train());
-/// let item = dataloader_train.iter().next();
-/// println!("{:?}", item);
-/// ````
 #[derive(Clone, Debug)]
 pub struct BouncingBallBatcher<B: Backend> {
     device: B::Device,
@@ -87,8 +87,9 @@ impl BouncingBallDataset {
     }
 
     pub fn new(split: &str) -> Self {
-        // let file_iterator = read_dir(format!("data/images_{split}_N_5000_T_100_dim_latent_2_dim_obs_2_resolution_32_state_3_sparsity_0.0_net_cosine_seed_24/" )).unwrap();
-        let file_iterator = read_dir(format!("data/")).unwrap();
+        // let file_iterator = read_dir(format!("data/bouncingball/images_{split}_N_5000_T_100_dim_latent_2_dim_obs_2_resolution_32_state_3_sparsity_0.0_net_cosine_seed_24/" )).unwrap();
+        let file_iterator =
+            read_dir(format!("data/bouncingball")).expect("cannot access bball directory");
 
         let items: Vec<_> = file_iterator
             .filter_map(|f| f.ok())
@@ -99,8 +100,6 @@ impl BouncingBallDataset {
                 Some(BouncingBallItem { image_sequence: a1 })
             })
             .collect();
-
-        println!("{}", items[0].image_sequence.first().unwrap());
 
         let dataset = InMemDataset::new(items);
         // let dataset = ShuffledDataset::new(dataset,);
