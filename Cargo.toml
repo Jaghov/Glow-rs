@@ -1,11 +1,11 @@
 [package]
-name = "glow"
+name = "glow_flow"
 version = "0.1.0"
 edition = "2021"
 description = "Glow normalising flow on the Burn ML framework."
 
 [lib]
-name = "glow"
+name = "glow_flow"
 path = "src/lib.rs"
 
 [[bin]]

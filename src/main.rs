@@ -5,10 +5,10 @@ use std::path::PathBuf;
 use burn::backend::libtorch::LibTorchDevice;
 use clap::{Parser, Subcommand, ValueEnum};
 
-use glow::models::flow::CouplingType;
-use glow::sample_run::run_sampling;
-use glow::train_run::run_training;
-use glow::training_config::TrainingConfig;
+use glow_flow::models::flow::CouplingType;
+use glow_flow::sample_run::run_sampling;
+use glow_flow::train_run::run_training;
+use glow_flow::training_config::TrainingConfig;
 
 #[derive(Parser)]
 #[command(
