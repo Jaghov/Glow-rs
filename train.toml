@@ -32,7 +32,7 @@ num_workers  = 4
 invert_warn_tol      = 50.0
 # Hard abort threshold; well above benign drift so only catastrophic divergence (or NaN/Inf)
 # triggers a `*_diverged` checkpoint and stops training.
-invert_abort_tol     = 20000.0
+invert_abort_tol     = 300.0
 # Number of fixed validation batches the invert check averages over each call. A small fixed
 # subset keeps the metric comparable across steps while reducing single-batch noise.
 invert_check_batches = 2

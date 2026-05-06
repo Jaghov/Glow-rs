@@ -9,17 +9,9 @@
 //!
 //! ## Affine (`CouplingType::Affine`)
 //!
-//! The raw scale output is passed through a **scaled sigmoid** that bakes the lower
-//! bound directly into the parameterisation:
-//!     `s = SCALE_MIN + (1 − SCALE_MIN) · σ(raw_scale + SCALE_BIAS)`
-//! with `SCALE_BIAS = 2.0` and `SCALE_MIN ≈ 0.082` (matches the previous
-//! `clamp_min(LOG_S_MIN = −2.5)` floor). This keeps `s ∈ [SCALE_MIN, 1)` with
-//! everywhere-non-zero gradient (the previous `clamp_min` masked gradients past the
-//! floor), so the optimiser can always pull saturated elements back into the live
-//! region. Initialisation: `σ(2) ≈ 0.881` ⇒ `s ≈ 0.891`, layer is near identity.
-//! Bounding `s` keeps `1/s ≤ 1/SCALE_MIN ≈ 12` in `inverse`, preventing the
-//! reconstruction blow-up the unbounded `exp(log_s)` formulation suffers once any
-//! `|log_s|` grows past ~3 in f32 (see `INVERT_DIAGNOSTICS_PLAN.md`).
+//! The raw scale output is passed through a **sigmoid** matching the rosinality
+//! reference: `s = σ(raw_scale + 2)`, giving `s ∈ (0, 1)`. At init (`raw_s = 0`
+//! from zero-init conv3), `σ(2) ≈ 0.881` so the layer is near-identity.
 //!
 //! Forward: `yb = xb * s + shift`. Log-determinant: `sum(log s)` (shift depends only on `xa`,
 //! so it does not change the Jacobian w.r.t. `xb`).
@@ -30,12 +22,12 @@
 //! ## Additive (`CouplingType::Additive`)
 //!
 //! `yb = xb + t(xa)`, `log_det = 0` (volume-preserving). The conditioning conv
-//! emits `half` channels (no scale head). The shift `t` is **unbounded** — unlike
-//! the affine path, additive's inverse `xb = yb − t` has no division, so a
-//! magnitude cap on `t` would buy no extra invertibility and only cost
-//! expressivity (and gradient flow in any saturated tanh regime). All convs in
-//! the conditioning net use Salimans–Kingma weight normalisation; the Lipschitz
-//! of `t` is not hard-bounded.
+//! emits `half` channels (no scale head). The shift `t` is bounded via
+//! `tanh * SHIFT_BOUND` — the same gating used by the affine shift. Per-step,
+//! additive's inverse `xb = yb − t` has no division, but over a deep stack
+//! (e.g. 96 steps) unbounded shifts accumulate and push activations into regimes
+//! where downstream ActNorm / InvConv layers struggle. All convs in the
+//! conditioning net use Salimans–Kingma weight normalisation.
 //!
 //! **Checkpoint compatibility:** affine and additive checkpoints are not
 //! interchangeable — `out_channels_factor` differs and the record load fails.
@@ -70,21 +62,18 @@ pub enum CouplingType {
 // ── Coupling parameterisation constants (affine path) ──────────────────────
 //
 // These three constants jointly bound the per-step Lipschitz constant of the
-// **affine** coupling map (and its inverse) so a deep stack stays numerically
-// invertible in `f32`. None of them apply to additive coupling: additive's
-// inverse is `yb − t` (no division), so bounding `|t|` via tanh would only cost
-// expressivity / gradient flow in saturated regions. All convs in the additive
-// conditioning net use the same WeightNorm as affine.
+// coupling map (and its inverse) so a deep stack stays numerically invertible
+// in `f32`. Both affine and additive coupling use `SHIFT_BOUND` via tanh to
+// prevent cumulative shift blow-up across deep stacks. `SCALE_BIAS` and
+// `SCALE_MIN` apply only to affine coupling.
 //
 // * Inside ActNorm + InvConv the activations are normalised to ≈unit variance.
 //   Therefore a `tanh`-based bound at ±4σ on the affine `shift` covers
 //   >99.99% of clean signal — empirically well beyond anything the network
 //   needs to represent.
-// * `s` lives in `[SCALE_MIN, 1)` via a scaled sigmoid. The lower bound
-//   `SCALE_MIN ≈ 0.0821` matches the previous `exp(LOG_S_MIN = −2.5)` floor but
-//   is applied **inside the parameterisation** (smooth) rather than as a hard
-//   `clamp_min` (which masks gradients past the floor). Per-element worst-case
-//   inverse amplification is `1/SCALE_MIN ≈ 12`.
+// * `s = sigmoid(raw_s + 2)` lives in `(0, 1)` — matching the rosinality
+//   reference. No lower-bound floor; the sigmoid's smooth gradient lets the
+//   optimizer recover from saturation.
 // * `SCALE_BIAS = 2` puts `σ(2) ≈ 0.881` and therefore `s ≈ 0.891` at init
 //   (`raw_s = 0` from zero-initialised conv3). The layer is **near-identity**,
 //   not exactly identity — the asymptotic identity `s = 1` is unreachable
@@ -92,12 +81,10 @@ pub enum CouplingType {
 //   gradient surface; rosinality / Glow reference checkpoints converge from
 //   here within a handful of steps.
 // * The combined inverse-direction worst case per affine coupling step is
-//   `|xb_inv| ≤ (|yb| + SHIFT_BOUND) / SCALE_MIN ≈ (|yb| + 4) / 0.082 ≈ 12·|yb| + 49`.
-//   With a stack of K · L ≈ 32 couplings the cumulative bound is loose but
-//   stays finite, which is the property `inverse` needs.
+//   `|xb_inv| ≤ (|yb| + SHIFT_BOUND) / s`. Since `s → 0` is possible,
+//   the inverse is not bounded by construction — matching the reference.
 
 const SCALE_BIAS: f32 = 2.0;
-const SCALE_MIN: f32 = 0.0821;
 const SHIFT_BOUND: f32 = 4.0;
 
 #[derive(Config, Debug)]
@@ -148,11 +135,9 @@ pub struct Coupling<B: Backend> {
 impl<B: Backend> Coupling<B> {
     /// Run the conditioning net on `xa` and return `(s_opt, log_s_opt, shift)`.
     ///
-    /// **Affine** (`s = SCALE_MIN + (1 − SCALE_MIN) · σ(raw_s + SCALE_BIAS)`):
-    /// `s ∈ [SCALE_MIN, 1)`, `log_s ∈ [log(SCALE_MIN), 0)`. Both are returned as
-    /// `Some(_)`. The sigmoid is materialised via `log_sigmoid + exp` for a
-    /// numerically robust path even when the conv net pushes `raw_s + SCALE_BIAS`
-    /// very negative.
+    /// **Affine** (`s = σ(raw_s + SCALE_BIAS)`):
+    /// `s ∈ (0, 1)`, `log_s = log_sigmoid(raw_s + SCALE_BIAS)`. Both returned as
+    /// `Some(_)`.
     ///
     /// **Additive** (`s = 1`, `log_s = 0`): both options are `None` and the conv
     /// only emits `shift`. Callers must treat `None` as the identity scale: skip
@@ -172,17 +157,19 @@ impl<B: Backend> Coupling<B> {
                 let shift_raw = st.narrow(1, half, half);
                 let shift = activation::tanh(shift_raw).mul_scalar(SHIFT_BOUND);
 
-                let log_sig = activation::log_sigmoid(raw_s.add_scalar(SCALE_BIAS));
-                let sig = log_sig.exp();
-                let s = sig.mul_scalar(1.0 - SCALE_MIN).add_scalar(SCALE_MIN);
-                let log_s = s.clone().log();
+                let log_s = activation::log_sigmoid(raw_s.add_scalar(SCALE_BIAS));
+                let s = log_s.clone().exp();
                 (Some(s), Some(log_s), shift)
             }
             CouplingType::Additive => {
-                // Conv emitted exactly `half` channels (out_channels_factor = 1).
-                // No magnitude cap on `t`: the inverse `yb − t` has no division,
-                // so bounding `|t|` would not improve numerical invertibility.
-                (None, None, st)
+                // Bound `t` via tanh just like the affine shift. Per-step, additive's
+                // inverse `yb − t` has no division so bounding isn't strictly needed
+                // for a single layer — but over a deep stack (96 steps), unbounded
+                // shifts accumulate and push activations into regimes where downstream
+                // ActNorm / InvConv layers struggle. SHIFT_BOUND = 4 covers well
+                // beyond the unit-variance regime ActNorm maintains.
+                let shift = activation::tanh(st).mul_scalar(SHIFT_BOUND);
+                (None, None, shift)
             }
         }
     }
@@ -220,7 +207,7 @@ impl<B: Backend> Coupling<B> {
     }
 
     /// `(min, max)` of the `log_s` actually applied in `forward`/`inverse` (post-sigmoid).
-    /// `log_s ∈ [log(SCALE_MIN), 0)` for affine; `log_s ≡ 0` for additive (returned as
+    /// `log_s ∈ (-∞, 0)` for affine; `log_s ≡ 0` for additive (returned as
     /// scalar zero tensors so the existing diagnostic plumbing keeps working).
     pub fn log_s_extrema_on_input(&self, x: Tensor<B, 4>) -> (Tensor<B, 1>, Tensor<B, 1>) {
         let [_b, c, _h, _w] = x.dims();
@@ -259,7 +246,7 @@ impl<B: Backend> Coupling<B> {
 
         let (s_opt, _, shift) = self.scale_and_shift(ya.clone());
         let xb = match s_opt {
-            // Affine: `(yb − shift) / s`. Bound `1/s ≤ 1/SCALE_MIN ≈ 12`.
+            // Affine: `(yb − shift) / s`.
             Some(s) => (yb - shift) / s,
             // Additive: `(yb − shift)` — no division, exact in f32.
             None => yb - shift,
@@ -360,6 +347,20 @@ mod tests {
         assert!(
             max_abs.is_finite() && max_abs <= SHIFT_BOUND + 1e-5,
             "shift |{max_abs}| should be ≤ SHIFT_BOUND={SHIFT_BOUND}"
+        );
+    }
+
+    /// Additive coupling shift is now also bounded via tanh.
+    #[rstest]
+    fn additive_coupling_shift_is_bounded(device: NdArrayDevice) {
+        let layer = CouplingConfig::new(8)
+            .with_coupling_type(CouplingType::Additive)
+            .init(&device);
+        let x = Tensor::<B, 4>::random([2, 8, 4, 4], Distribution::Normal(0.0, 5.0), &device);
+        let max_abs: f32 = layer.shift_abs_max_on_input(x).into_scalar();
+        assert!(
+            max_abs.is_finite() && max_abs <= SHIFT_BOUND + 1e-5,
+            "additive shift |{max_abs}| should be ≤ SHIFT_BOUND={SHIFT_BOUND}"
         );
     }
 }

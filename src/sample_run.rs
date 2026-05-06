@@ -3,12 +3,14 @@
 use std::path::Path;
 
 use burn::backend::libtorch::{LibTorch, LibTorchDevice};
+use burn::data::dataloader::DataLoaderBuilder;
 use burn::prelude::Module;
 use burn::record::{BinFileRecorder, FullPrecisionSettings};
 use burn::tensor::{Distribution, Tensor};
 use ndarray::Array3;
 
-use crate::models::flow::{DequantizeConfig, GlowConfig};
+use crate::dataset::celeba::{CelebABatcher, CelebADataset};
+use crate::models::flow::{CouplingType, DequantizeConfig, GlowConfig};
 use crate::train_run::CheckpointMeta;
 
 /// Returns the latent tensor shape at each Glow level for a given input spatial size.
@@ -100,6 +102,8 @@ pub fn run_sampling(
     temperature: f32,
     device: LibTorchDevice,
 ) -> Result<(), String> {
+    crate::disable_tf32();
+
     // ── load metadata ─────────────────────────────────────────────────────────
     let meta_path = checkpoint.with_extension("meta.json");
     let meta = CheckpointMeta::load(&meta_path)?;
@@ -110,10 +114,15 @@ pub fn run_sampling(
     );
 
     // ── build model ───────────────────────────────────────────────────────────
+    let coupling_type = match meta.coupling_type.as_deref() {
+        Some(s) if s.eq_ignore_ascii_case("additive") => CouplingType::Additive,
+        _ => CouplingType::Affine,
+    };
     let glow_cfg = GlowConfig::new(meta.in_channels)
         .with_num_levels(meta.num_levels)
         .with_num_steps(meta.num_steps)
-        .with_hidden_features(meta.hidden_features);
+        .with_hidden_features(meta.hidden_features)
+        .with_coupling_type(coupling_type);
 
     let recorder = BinFileRecorder::<FullPrecisionSettings>::new();
     let model = glow_cfg
@@ -123,30 +132,83 @@ pub fn run_sampling(
 
     let dq = DequantizeConfig::new(meta.pixel_depth).init::<LibTorch>(&device);
 
-    // ── generate latent samples ───────────────────────────────────────────────
-    let shapes = latent_shapes(
-        meta.in_channels,
-        meta.in_height,
-        meta.in_width,
-        meta.num_levels,
-        num_samples,
-    );
-    let zs: Vec<Tensor<LibTorch, 4>> = shapes
+    // ── load real CelebA images for reconstruction ───────────────────────────
+    println!("Loading {num_samples} CelebA test images …");
+    let loader = DataLoaderBuilder::<LibTorch, _, _>::new(CelebABatcher)
+        .batch_size(num_samples)
+        .shuffle(42)
+        .num_workers(1)
+        .set_device(device.clone())
+        .build(CelebADataset::test());
+    let probe_batch: Tensor<LibTorch, 4> = loader
         .iter()
-        .map(|&shape| {
-            Tensor::<LibTorch, 4>::random(
-                shape,
-                Distribution::Normal(0.0, temperature as f64),
-                &device,
-            )
-        })
-        .collect();
+        .next()
+        .expect("CelebA test set should have at least one batch")
+        .images
+        .float();
 
-    println!("Sampling {num_samples} images at temperature {temperature:.2} …");
+    // ── reconstruct: forward → inverse round-trip ────────────────────────────
+    // For a partially-trained model, free sampling (z ~ N(0,T)) won't produce
+    // meaningful images because the latent distribution hasn't converged to N(0,1).
+    // Instead, show reconstructions: forward the probe images through the model,
+    // get exact zs, and inverse them. This reveals what the model has learned so far.
+    println!("Running forward → inverse reconstruction on {} probe images …", probe_batch.dims()[0]);
+    let probe_y = dq.forward(probe_batch.clone());
+    let probe_y_copy = probe_y.clone();
+    let (probe_zs, _) = model.forward(probe_y);
 
-    // ── invert through model ──────────────────────────────────────────────────
+    for (i, pz) in probe_zs.iter().enumerate() {
+        let m: f32 = pz.clone().mean().into_scalar();
+        let s: f32 = {
+            let [_, c, _, _] = pz.dims();
+            pz.clone().swap_dims(0, 1).reshape([c, usize::MAX]).var(1).mean().sqrt().into_scalar()
+        };
+        println!("  z[{i}] mean={m:.4} std={s:.4}");
+    }
+
+    // Optionally perturb the zs by a small amount to show variation
+    let zs: Vec<Tensor<LibTorch, 4>> = if temperature > 0.0 {
+        probe_zs
+            .iter()
+            .map(|pz| {
+                let noise = Tensor::<LibTorch, 4>::random(
+                    pz.dims(),
+                    Distribution::Normal(0.0, temperature as f64),
+                    &device,
+                );
+                pz.clone() + noise
+            })
+            .collect()
+    } else {
+        probe_zs
+    };
+
     let continuous = model.inverse(zs);
+
+    {
+        let cmin: f32 = continuous.clone().min().into_scalar();
+        let cmax: f32 = continuous.clone().max().into_scalar();
+        let cmean: f32 = continuous.clone().mean().into_scalar();
+        let y_min: f32 = probe_y_copy.clone().min().into_scalar();
+        let y_max: f32 = probe_y_copy.clone().max().into_scalar();
+        let y_mean: f32 = probe_y_copy.clone().mean().into_scalar();
+        let mse: f32 = (probe_y_copy - continuous.clone()).powf_scalar(2.0).mean().into_scalar();
+        println!("  original y:    mean={y_mean:.4}, range=[{y_min:.4},{y_max:.4}]");
+        println!("  reconstructed: mean={cmean:.4}, range=[{cmin:.4},{cmax:.4}], mse={mse:.6}");
+    }
+
     let pixels = dq.inverse(continuous);
+
+    {
+        let pmin: f32 = pixels.clone().min().into_scalar();
+        let pmax: f32 = pixels.clone().max().into_scalar();
+        let pmean: f32 = pixels.clone().mean().into_scalar();
+        let orig_mean: f32 = probe_batch.clone().mean().into_scalar();
+        let pmse: f32 = (probe_batch.clone() - pixels.clone()).powf_scalar(2.0).mean().into_scalar();
+        println!("  pixel recon:   mean={pmean:.1}, range=[{pmin:.0},{pmax:.0}], mse={pmse:.1} (orig_mean={orig_mean:.1})");
+    }
+
+    let probe_batch_pixels = probe_batch;
 
     // ── save grid ─────────────────────────────────────────────────────────────
     let cols = (num_samples as f64).sqrt().ceil() as usize;
@@ -160,14 +222,28 @@ pub fn run_sampling(
         use rerun::RecordingStreamBuilder;
         if let Ok(rec) = RecordingStreamBuilder::new("glow-rs-sample").spawn() {
             rec.set_time_sequence("sample", 0_i64);
+
+            // Log original input grid
+            if let Ok(orig_grid) = rgb_grid_hwc_u8_from_nchw(probe_batch_pixels, cols) {
+                if let Ok(img) =
+                    rerun::Image::from_color_model_and_tensor(rerun::ColorModel::RGB, orig_grid)
+                {
+                    let _ = rec.log("sample/original", &img);
+                }
+            }
+
+            // Log reconstruction grid
             if let Ok(img) =
                 rerun::Image::from_color_model_and_tensor(rerun::ColorModel::RGB, grid_arr)
             {
-                let _ = rec.log("sample/grid", &img);
+                let _ = rec.log("sample/reconstruction", &img);
             }
             let _ = rec.log(
-                "sample/path",
-                &rerun::TextLog::new(out_path.display().to_string()),
+                "sample/info",
+                &rerun::TextLog::new(format!(
+                    "checkpoint step={}",
+                    meta.global_step
+                )),
             );
         }
     }

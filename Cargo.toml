@@ -21,7 +21,7 @@ default = []
 # `Glow` with so `Glow::inverse` (which requires `TriangularInverse`) compiles.
 # Pure-forward use (`forward` / `log_likelihood`) does not need either.
 backend-ndarray = ["burn/ndarray"]
-backend-tch     = ["burn/tch"]
+backend-tch     = ["burn/tch", "dep:tch"]
 
 # CelebA / bouncing-ball loaders. Pulls Burn's dataset + HF/SQLite stack.
 dataset = [
@@ -61,6 +61,7 @@ image = { version = "0.25", optional = true }
 ndarray = { version = "0.16.1", optional = true }
 ndarray-npz = { version = "0.4.2", optional = true }
 rerun = { version = "0.31", features = ["run", "native_viewer"], optional = true }
+tch = { version = "0.22.0", optional = true }
 
 [dev-dependencies]
 # Tests run against the NdArray CPU backend.

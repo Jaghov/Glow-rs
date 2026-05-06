@@ -4,9 +4,15 @@ use burn::{
     config::Config,
     module::{Ignored, Module, Param},
     prelude::Backend,
-    tensor::Shape,
+    tensor::{activation, Shape},
     Tensor,
 };
+
+// Soft bound on the per-channel log-scale `weight`. The effective weight is
+// `WEIGHT_MAX * tanh(raw / WEIGHT_MAX)`, giving `exp(weight) ∈ [exp(-MAX), exp(MAX)]`
+// ≈ `[0.05, 20.1]` for MAX = 3. Generous enough for full expressivity while
+// preventing compound blow-up across a deep stack of ActNorm layers.
+const WEIGHT_MAX: f32 = 3.0;
 
 #[derive(Config, Debug)]
 pub struct ActnormConfig {
@@ -34,6 +40,14 @@ pub struct ActNorm<B: Backend> {
 }
 
 impl<B: Backend> ActNorm<B> {
+    /// Bounded log-scale: `WEIGHT_MAX * tanh(raw / WEIGHT_MAX)`.
+    /// At init (`raw = 0`) this returns 0 (identity scale). Gradients flow
+    /// smoothly everywhere — no dead zone unlike a hard clamp.
+    #[inline]
+    fn effective_weight(&self) -> Tensor<B, 1> {
+        activation::tanh(self.weight.val().div_scalar(WEIGHT_MAX)).mul_scalar(WEIGHT_MAX)
+    }
+
     #[cold]
     pub fn init(&mut self, example: Tensor<B, 4>) {
         let device = example.device();
@@ -64,23 +78,22 @@ impl<B: Backend> ActNorm<B> {
     }
     pub fn forward(&self, x: Tensor<B, 4>) -> (Tensor<B, 4>, Tensor<B, 1>) {
         let [b, .., h, w] = x.dims();
-        let log_det_jacobian = (h * w) as f32 * self.weight.val();
+        let ew = self.effective_weight();
+        let log_det_jacobian = ew.clone().mul_scalar((h * w) as f32);
         (
             (x + self.bias.val().unsqueeze_dims(&[0, 2, 3]))
-                .mul(self.weight.val().exp().unsqueeze_dims(&[0, 2, 3])),
+                .mul(ew.exp().unsqueeze_dims(&[0, 2, 3])),
             Tensor::repeat_dim(log_det_jacobian, 0, b),
         )
     }
     pub fn inverse(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
-        x.mul(self.weight.val().neg().exp().unsqueeze_dims(&[0, 2, 3]))
+        x.mul(self.effective_weight().neg().exp().unsqueeze_dims(&[0, 2, 3]))
             - self.bias.val().unsqueeze_dims(&[0, 2, 3])
     }
 
-    /// Diagnostic: `(min, max)` of the per-channel log-scale `weight`.
-    /// `inverse` applies `exp(-weight)`; large positive `weight` = aggressive shrink,
-    /// large negative `weight` = aggressive amplification on the inverse path.
+    /// Diagnostic: `(min, max)` of the effective (post-tanh) per-channel log-scale.
     pub fn weight_extrema(&self) -> (Tensor<B, 1>, Tensor<B, 1>) {
-        let w = self.weight.val();
+        let w = self.effective_weight();
         (w.clone().min(), w.max())
     }
 }

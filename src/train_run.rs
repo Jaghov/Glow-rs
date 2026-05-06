@@ -457,6 +457,8 @@ pub fn run_training(
     resume_base: Option<PathBuf>,
     cli_lr_override: Option<f64>,
 ) -> Result<(), String> {
+    crate::disable_tf32();
+
     let recorder = BinFileRecorder::<FullPrecisionSettings>::new();
     // Namespace checkpoints by coupling type so affine and additive runs don't
     // overwrite each other in a shared `checkpoint_dir`. The user's TOML value is

@@ -55,6 +55,16 @@ pub mod train_run;
 #[cfg(feature = "training")]
 pub mod sample_run;
 
+/// Disable TF32 matmul precision on NVIDIA Ampere+ GPUs.
+///
+/// Since Ampere, CUDA defaults to TF32 (10-bit mantissa) for float32 matmuls.
+/// This is fine for most training, but normalizing flows need tight round-trip
+/// invertibility — TF32 errors in the 1×1 convolutions compound across a deep
+/// stack of InvConv layers. Call once before constructing the model.
+pub fn disable_tf32() {
+    std::env::set_var("NVIDIA_TF32_OVERRIDE", "0");
+}
+
 /// Canonical inference API.
 ///
 /// `use glow::prelude::*;` brings in everything you need to build a Glow model,

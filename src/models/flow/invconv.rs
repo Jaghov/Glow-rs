@@ -3,10 +3,17 @@ use burn::{
     module::{Ignored, Module, Param},
     nn::Initializer,
     prelude::Backend,
-    tensor::{linalg, ops::ConvOptions, Float as BurnFloat, TensorData},
+    tensor::{activation, linalg, ops::ConvOptions, Float as BurnFloat, TensorData},
     Tensor,
 };
 use std::sync::{Arc, Mutex};
+
+// Soft bound on `log_w_s` (log of `|diag(U)|` in the PLU factorisation).
+// Effective value is `LOG_W_S_MAX * tanh(raw / LOG_W_S_MAX)`, keeping pivots
+// in `[exp(-MAX), exp(MAX)]` ≈ `[0.05, 20.1]` for MAX = 3. Prevents
+// near-singular matrices (tiny pivots) and huge inverse amplification across
+// a deep stack of InvConv layers.
+const LOG_W_S_MAX: f32 = 3.0;
 
 // ── TriangularInverse trait ───────────────────────────────────────────────────
 
@@ -30,6 +37,18 @@ use std::sync::{Arc, Mutex};
 /// `NdArray` and `LibTorch` share the same host implementation; on-device triangular solves
 /// are blocked on Burn's default fusion stack not exposing raw Cube launches.
 pub trait TriangularInverse: Backend {
+    /// Invert a small n×n matrix on-device. The default pulls to host and uses
+    /// Gauss–Jordan; backends with native linalg can override (see LibTorch impl).
+    fn invert_matrix(w: Tensor<Self, 2>) -> Tensor<Self, 2> {
+        let [n, _] = w.dims();
+        let device = w.device();
+        let w_data = w
+            .into_data()
+            .to_vec::<f32>()
+            .expect("invert_matrix: f32 conversion failed");
+        gauss_jordan_inverse::<Self>(&w_data, n, &device)
+    }
+
     fn invert_plu(p: Tensor<Self, 2>, l: Tensor<Self, 2>, u: Tensor<Self, 2>) -> Tensor<Self, 2> {
         let [n, _] = l.dims();
         let device = l.device();
@@ -124,6 +143,71 @@ pub trait TriangularInverse: Backend {
     }
 }
 
+/// Gauss–Jordan full-matrix inverse on the host. Given a flat row-major `n×n`
+/// matrix, returns `Tensor<B, 2>` on `device`. Returns a NaN matrix if the
+/// matrix is singular or contains non-finite values.
+fn gauss_jordan_inverse<B: Backend>(data: &[f32], n: usize, device: &B::Device) -> Tensor<B, 2> {
+    let nan_kernel = || {
+        Tensor::from_data(TensorData::new(vec![f32::NAN; n * n], [n, n]), device)
+    };
+    if data.iter().any(|v| !v.is_finite()) {
+        return nan_kernel();
+    }
+
+    let mut aug = vec![0.0f32; n * 2 * n];
+    for i in 0..n {
+        for j in 0..n {
+            aug[i * 2 * n + j] = data[i * n + j];
+        }
+        aug[i * 2 * n + n + i] = 1.0;
+    }
+
+    for col in 0..n {
+        let mut max_row = col;
+        let mut max_val = aug[col * 2 * n + col].abs();
+        for row in (col + 1)..n {
+            let v = aug[row * 2 * n + col].abs();
+            if v > max_val {
+                max_val = v;
+                max_row = row;
+            }
+        }
+        if max_val < 1e-12 {
+            return nan_kernel();
+        }
+        if max_row != col {
+            for k in 0..(2 * n) {
+                aug.swap(col * 2 * n + k, max_row * 2 * n + k);
+            }
+        }
+
+        let pivot = aug[col * 2 * n + col];
+        let inv_pivot = 1.0 / pivot;
+        for k in 0..(2 * n) {
+            aug[col * 2 * n + k] *= inv_pivot;
+        }
+
+        for row in 0..n {
+            if row == col {
+                continue;
+            }
+            let factor = aug[row * 2 * n + col];
+            for k in 0..(2 * n) {
+                aug[row * 2 * n + k] -= factor * aug[col * 2 * n + k];
+            }
+        }
+    }
+
+    let mut inv = vec![0.0f32; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            inv[i * n + j] = aug[i * 2 * n + n + j];
+        }
+    }
+
+    Tensor::from_data(TensorData::new(inv, [n, n]), device)
+}
+
 // Backend-specific impls, gated by their `backend-*` features. The trait body
 // is empty (host-side `into_data` / `from_data` round-trip works on any backend),
 // so consumers using a different backend (e.g. `wgpu`, `cuda`) just write
@@ -135,7 +219,19 @@ pub trait TriangularInverse: Backend {
 impl TriangularInverse for burn::backend::NdArray {}
 
 #[cfg(feature = "backend-tch")]
-impl TriangularInverse for burn::backend::LibTorch {}
+impl TriangularInverse for burn::backend::LibTorch {
+    fn invert_matrix(w: Tensor<Self, 2>) -> Tensor<Self, 2> {
+        use burn::tensor::TensorPrimitive;
+        use burn::backend::libtorch::TchTensor;
+        match w.into_primitive() {
+            TensorPrimitive::Float(tch_t) => {
+                let tch_inv = tch::Tensor::linalg_inv(&tch_t.tensor);
+                Tensor::from_primitive(TensorPrimitive::Float(TchTensor::new(tch_inv)))
+            }
+            _ => unreachable!("invert_matrix: expected Float primitive"),
+        }
+    }
+}
 
 #[derive(Config, Debug)]
 pub struct InvConv1x1Config {
@@ -204,6 +300,13 @@ pub struct InvConv1x1<B: Backend> {
 }
 
 impl<B: Backend> InvConv1x1<B> {
+    /// Bounded log-scale: `LOG_W_S_MAX * tanh(raw / LOG_W_S_MAX)`.
+    /// At init (orthogonal matrix, `log_w_s` near 0) this is near-identity.
+    #[inline]
+    fn effective_log_w_s(&self) -> Tensor<B, 1> {
+        activation::tanh(self.log_w_s.val().div_scalar(LOG_W_S_MAX)).mul_scalar(LOG_W_S_MAX)
+    }
+
     /// Build a fresh identity matrix on the device hosting `w_p`. Cheaper than carrying
     /// a persistent `ident` tensor: a raw `Tensor<B, D>` field would *not* be saved by
     /// the `Module` record (Burn's `Module for Tensor` uses `ConstantRecord`), so it
@@ -218,19 +321,20 @@ impl<B: Backend> InvConv1x1<B> {
     #[inline]
     fn construct_kernel(&self) -> Tensor<B, 2> {
         let ident = self.ident();
+        let eff = self.effective_log_w_s();
         self.w_p
             .val()
             .matmul(self.w_lu.val().tril(-1) + ident.clone())
             .matmul(
                 self.w_lu.val().triu(1)
-                    + (self.log_w_s.val().exp() * self.w_s_sign.val()).unsqueeze::<2>() * ident,
+                    + (eff.exp() * self.w_s_sign.val()).unsqueeze::<2>() * ident,
             )
     }
 
     pub fn forward(&self, input: Tensor<B, 4>) -> (Tensor<B, 4>, Tensor<B, 1>) {
         let kernel = self.construct_kernel();
         let [b, .., h, w] = input.dims();
-        let log_det_jacobian = (h * w) as f32 * self.log_w_s.val().sum();
+        let log_det_jacobian = (h * w) as f32 * self.effective_log_w_s().sum();
         let out = burn::tensor::module::conv2d(
             input,
             kernel.unsqueeze_dims(&[2, 3]),
@@ -249,11 +353,27 @@ impl<B: Backend> InvConv1x1<B> {
         *self.inverse_cache.0.lock().unwrap() = None;
     }
 
-    /// Diagnostic: `(min, max)` of `log_w_s` (log of `|diag(U)|`). Very negative values mean
-    /// the channel-mixing matrix is approaching singular; `invert_plu` will amplify error.
+    /// Diagnostic: `(min, max)` of the effective (post-tanh) `log_w_s`.
     pub fn log_w_s_extrema(&self) -> (Tensor<B, 1>, Tensor<B, 1>) {
-        let s = self.log_w_s.val();
+        let s = self.effective_log_w_s();
         (s.clone().min(), s.max())
+    }
+
+    /// Diagnostic: max absolute value of the off-diagonal elements of L and U.
+    pub fn off_diag_abs_max(&self) -> (f32, f32) {
+        let w_lu = self.w_lu.val();
+        let l_data = w_lu.clone().tril(-1).abs().max().into_data();
+        let u_data = w_lu.triu(1).abs().max().into_data();
+        let l_off = l_data.to_vec::<f32>().unwrap()[0];
+        let u_off = u_data.to_vec::<f32>().unwrap()[0];
+        (l_off, u_off)
+    }
+
+    /// Diagnostic: forward kernel W and its Frobenius norm.
+    pub fn kernel_frobenius_norm(&self) -> f32 {
+        let w = self.construct_kernel();
+        let data = w.powf_scalar(2.0).sum().sqrt().into_data();
+        data.to_vec::<f32>().unwrap()[0]
     }
 }
 
@@ -265,11 +385,8 @@ impl<B: Backend + TriangularInverse> InvConv1x1<B> {
         if let Some(cached) = guard.as_ref() {
             return Tensor::from_data(cached.clone(), &device);
         }
-        let ident = self.ident();
-        let l = self.w_lu.val().tril(-1) + ident.clone();
-        let u = self.w_lu.val().triu(1)
-            + (self.log_w_s.val().exp() * self.w_s_sign.val()).unsqueeze::<2>() * ident;
-        let kernel = B::invert_plu(self.w_p.val(), l, u);
+        let w = self.construct_kernel();
+        let kernel = B::invert_matrix(w);
         *guard = Some(kernel.to_data());
         kernel
     }
@@ -388,8 +505,8 @@ impl<B: Backend> InvConv1x1<B> {
 
         // L = tril(w_lu, -1) + I (unit lower triangular). Autodiff-alive.
         let l = self.w_lu.val().tril(-1) + ident.clone();
-        // U = triu(w_lu, 1) + diag(exp(log_w_s) · sign). Autodiff-alive.
-        let diag_u = self.log_w_s.val().exp() * self.w_s_sign.val();
+        // U = triu(w_lu, 1) + diag(exp(eff_log_w_s) · sign). Autodiff-alive.
+        let diag_u = self.effective_log_w_s().exp() * self.w_s_sign.val();
         let u = self.w_lu.val().triu(1) + diag_u.unsqueeze::<2>() * ident.clone();
 
         // Host initial guesses for the polishing iteration (autodiff-detached leaves).
@@ -524,24 +641,31 @@ mod tests {
     }
 
     #[test]
-    fn test_inverse_non_finite_for_singular_matrix() {
-        // A singular weight matrix should produce Inf or NaN, not silently wrong values.
+    fn test_extreme_log_w_s_stays_invertible() {
+        // With the tanh soft-clamp, even extreme raw log_w_s values are bounded
+        // and the layer stays invertible (no NaN/Inf). This is the desired
+        // behaviour: singularity is unreachable by design.
         let device = Default::default();
         let mut layer = make_layer(4);
-        layer.log_w_s = Param::from_tensor(Tensor::full([4], f32::NEG_INFINITY, &device));
+        layer.log_w_s = Param::from_tensor(Tensor::full([4], -100.0_f32, &device));
 
         let x: Tensor<TestBackend, 4> = Tensor::random(
             [2, 4, 8, 8],
             burn::tensor::Distribution::Normal(0.0, 1.0),
             &device,
         );
-        let (y, _) = layer.forward(x);
+        let (y, _) = layer.forward(x.clone());
         let x_rec = layer.inverse(y);
 
-        let vals = x_rec.into_data().to_vec::<f32>().unwrap();
+        let vals = x_rec.clone().into_data().to_vec::<f32>().unwrap();
         assert!(
-            vals.iter().any(|v| !v.is_finite()),
-            "singular matrix should produce Inf/NaN in the inverse output"
+            vals.iter().all(|v| v.is_finite()),
+            "extreme log_w_s should still produce finite inverse thanks to tanh bound"
+        );
+        let diff = (x - x_rec).abs().max().into_scalar();
+        assert!(
+            diff < 1e-3,
+            "round-trip should still be accurate, got diff={diff}"
         );
     }
 
