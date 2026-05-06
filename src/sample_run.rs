@@ -103,6 +103,7 @@ pub fn run_sampling(
     device: LibTorchDevice,
 ) -> Result<(), String> {
     crate::disable_tf32();
+    crate::enable_deterministic_kernels();
 
     // ── load metadata ─────────────────────────────────────────────────────────
     let meta_path = checkpoint.with_extension("meta.json");

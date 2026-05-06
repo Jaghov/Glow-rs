@@ -1,0 +1,54 @@
+[model]
+in_channels   = 3
+in_height     = 128
+in_width      = 128
+num_levels    = 4
+num_steps     = 20
+hidden_features = 384
+pixel_depth   = 5
+# Coupling parameterisation. "affine" (default) is full Glow; "additive" is the
+# stability-first variant (s = 1, log_det = 0). See
+# docs/ADDITIVE_COUPLING_AND_SPECTRAL_NORM.md for the trade-off.
+coupling_type           = "affine"
+
+[optimizer]
+# Lowered in line with rosinality / vvvm23 reference setups; gentler updates keep the
+# affine inverse Jacobian in a well-conditioned regime over deep stacks.
+learning_rate = 5e-5
+# Tighter than the previous 5.0; bounds per-step weight motion in InvConv and coupling convs.
+grad_clip_norm = 1.0
+# Slightly stronger pull toward zero counteracts cumulative drift in conv filters that
+# produce coupling `shift` and `raw_s`.
+weight_decay = 1e-3
+
+[data]
+batch_size   = 4
+grad_accum_steps   = 4
+num_workers  = 4
+
+[run]
+# Soft warning threshold on Glow round-trip pixel MSE on `[0,255]`. Above this we print a
+# WARN line but keep training; benign f32 drift can sit in this band without being broken.
+invert_warn_tol      = 50.0
+# Hard abort threshold; well above benign drift so only catastrophic divergence (or NaN/Inf)
+# triggers a `*_diverged` checkpoint and stops training.
+invert_abort_tol     = 300.0
+# Number of fixed validation batches the invert check averages over each call. A small fixed
+# subset keeps the metric comparable across steps while reducing single-batch noise.
+invert_check_batches = 2
+invert_diagnostics   = true
+max_epochs           = 12
+checkpoint_dir       = "checkpoints"
+checkpoint_every     = 1000
+val_every            = 1000
+log_every            = 100
+
+# Finite-differences regularizer ("Exploding Inverses", Behrmann/Vicol). Only read when
+# the binary is built with `--features fd_reg`; without the feature this section is
+# silently ignored. FD reg roughly doubles activation memory on the steps it fires.
+# [regularization]
+# fd_lambda        = 1.0
+# fd_warmup_steps  = 5000
+# fd_epsilon       = 0.05
+# fd_every_n_steps = 1
+

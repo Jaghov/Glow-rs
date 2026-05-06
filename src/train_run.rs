@@ -458,6 +458,7 @@ pub fn run_training(
     cli_lr_override: Option<f64>,
 ) -> Result<(), String> {
     crate::disable_tf32();
+    crate::enable_deterministic_kernels();
 
     let recorder = BinFileRecorder::<FullPrecisionSettings>::new();
     // Namespace checkpoints by coupling type so affine and additive runs don't

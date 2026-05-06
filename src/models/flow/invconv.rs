@@ -1,4 +1,5 @@
 use burn::{
+    backend::Autodiff,
     config::Config,
     module::{Ignored, Module, Param},
     nn::Initializer,
@@ -66,9 +67,8 @@ pub trait TriangularInverse: Backend {
             .to_vec::<f32>()
             .expect("invert_plu: p f32 conversion failed");
 
-        let nan_kernel = || {
-            Tensor::from_data(TensorData::new(vec![f32::NAN; n * n], [n, n]), &device)
-        };
+        let nan_kernel =
+            || Tensor::from_data(TensorData::new(vec![f32::NAN; n * n], [n, n]), &device);
 
         // Early bail-out: a non-finite factor can only produce a non-finite kernel.
         // Returning a NaN kernel up-front avoids wasting host work on substitutions that
@@ -147,9 +147,7 @@ pub trait TriangularInverse: Backend {
 /// matrix, returns `Tensor<B, 2>` on `device`. Returns a NaN matrix if the
 /// matrix is singular or contains non-finite values.
 fn gauss_jordan_inverse<B: Backend>(data: &[f32], n: usize, device: &B::Device) -> Tensor<B, 2> {
-    let nan_kernel = || {
-        Tensor::from_data(TensorData::new(vec![f32::NAN; n * n], [n, n]), device)
-    };
+    let nan_kernel = || Tensor::from_data(TensorData::new(vec![f32::NAN; n * n], [n, n]), device);
     if data.iter().any(|v| !v.is_finite()) {
         return nan_kernel();
     }
@@ -218,18 +216,42 @@ fn gauss_jordan_inverse<B: Backend>(data: &[f32], n: usize, device: &B::Device) 
 #[cfg(any(test, feature = "backend-ndarray"))]
 impl TriangularInverse for burn::backend::NdArray {}
 
+// Cast to fp64 before inversion: a per-layer 1×1 conv weight has condition
+// number ~exp(LOG_W_S_MAX·2); compounded across 96 layers an f32 inverse drifts
+// enough to dominate the round-trip MSE. fp64 inversion (then cast back) costs
+// ~nothing on a [C,C] matrix — sizes here are at most a few hundred.
+#[cfg(feature = "backend-tch")]
+fn invert_via_fp64(tch_t: &tch::Tensor) -> tch::Tensor {
+    let dtype = tch_t.kind();
+    let in_f64 = tch_t.to_kind(tch::Kind::Double);
+    let inv_f64 = tch::Tensor::linalg_inv(&in_f64);
+    inv_f64.to_kind(dtype)
+}
+
 #[cfg(feature = "backend-tch")]
 impl TriangularInverse for burn::backend::LibTorch {
     fn invert_matrix(w: Tensor<Self, 2>) -> Tensor<Self, 2> {
-        use burn::tensor::TensorPrimitive;
         use burn::backend::libtorch::TchTensor;
+        use burn::tensor::TensorPrimitive;
         match w.into_primitive() {
             TensorPrimitive::Float(tch_t) => {
-                let tch_inv = tch::Tensor::linalg_inv(&tch_t.tensor);
+                let tch_inv = invert_via_fp64(&tch_t.tensor);
                 Tensor::from_primitive(TensorPrimitive::Float(TchTensor::new(tch_inv)))
             }
             _ => unreachable!("invert_matrix: expected Float primitive"),
         }
+    }
+}
+// `invert_matrix` is only used on the reverse path (sampling / round-trip
+// check); no gradient flows through it. So the Autodiff variant detaches to
+// the inner LibTorch tensor, runs the fp64 inversion there, and re-wraps via
+// `Tensor::from_inner` (no-grad).
+#[cfg(feature = "backend-tch")]
+impl TriangularInverse for Autodiff<burn::backend::LibTorch> {
+    fn invert_matrix(w: Tensor<Self, 2>) -> Tensor<Self, 2> {
+        let inner = w.inner();
+        let inv = <burn::backend::LibTorch as TriangularInverse>::invert_matrix(inner);
+        Tensor::from_inner(inv)
     }
 }
 
@@ -255,8 +277,8 @@ impl InvConv1x1Config {
         // Frozen params: persisted via the Module record so resume preserves the LU
         // factorisation (mirrors PyTorch `register_buffer`); marked non-trainable so
         // AdamW won't drift them off the {0,1} / {±1} domain they live on.
-        let w_p = Param::from_tensor(Tensor::from_data(w_p.into_data(), device))
-            .set_require_grad(false);
+        let w_p =
+            Param::from_tensor(Tensor::from_data(w_p.into_data(), device)).set_require_grad(false);
         let w_s_sign = Param::from_tensor(Tensor::from_data(w_s_sign.into_data(), device))
             .set_require_grad(false);
         let conv_options = ConvOptions::new([1, 1], [0, 0], [1, 1], 1);
@@ -521,14 +543,16 @@ impl<B: Backend> InvConv1x1<B> {
             .to_vec::<f32>()
             .expect("autodiff inverse: u f32 conversion");
         let l_inv_host = Self::host_invert_unit_lower(&l_data, n);
-        let u_inv_host = Self::host_invert_upper(&u_data, n).unwrap_or_else(|| vec![f32::NAN; n * n]);
+        let u_inv_host =
+            Self::host_invert_upper(&u_data, n).unwrap_or_else(|| vec![f32::NAN; n * n]);
         let l_inv_init: Tensor<B, 2> =
             Tensor::from_data(TensorData::new(l_inv_host, [n, n]), &device);
         let u_inv_init: Tensor<B, 2> =
             Tensor::from_data(TensorData::new(u_inv_host, [n, n]), &device);
 
         // Polish: brings the gradient information into the autodiff graph.
-        let l_inv = Self::newton_schulz_polish(l, l_inv_init, Self::NEWTON_ITERS_POLISH, ident.clone());
+        let l_inv =
+            Self::newton_schulz_polish(l, l_inv_init, Self::NEWTON_ITERS_POLISH, ident.clone());
         let u_inv = Self::newton_schulz_polish(u, u_inv_init, Self::NEWTON_ITERS_POLISH, ident);
 
         // Pᵀ: permutation transpose. `w_p` has require_grad=false so no grad flows.
@@ -680,10 +704,8 @@ mod tests {
         let kernel_before = layer.construct_kernel();
         let inv_before = layer.construct_inverse_kernel();
 
-        let tmp = std::env::temp_dir().join(format!(
-            "glow_rs_invconv_resume_{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("glow_rs_invconv_resume_{}", std::process::id()));
         let recorder = BinFileRecorder::<FullPrecisionSettings>::new();
         layer
             .clone()
