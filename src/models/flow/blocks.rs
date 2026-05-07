@@ -47,6 +47,10 @@ impl<B: Backend> GlowStep<B> {
         self.actnorm.init(example);
     }
 
+    pub fn actnorm_ref(&self) -> &ActNorm<B> { &self.actnorm }
+    pub fn invconv_ref(&self) -> &InvConv1x1<B> { &self.invconv }
+    pub fn coupling_ref(&self) -> &Coupling<B> { &self.coupling }
+
     pub fn forward(&self, x: Tensor<B, 4>) -> (Tensor<B, 4>, Tensor<B, 1>) {
         let [b, c, _, _] = x.dims();
         let (x, ld1) = self.actnorm.forward(x);
@@ -209,6 +213,8 @@ impl<B: Backend> GlowBlock<B> {
             h = Tensor::from_data(h2.into_data(), &device);
         }
     }
+
+    pub fn steps_for_diag(&self) -> &[GlowStep<B>] { &self.steps }
 
     /// `[B, C_in, H, W]` → `([B, 4*C_in, H/2, W/2], log_det [B])`
     pub fn forward(&self, x: Tensor<B, 4>) -> (Tensor<B, 4>, Tensor<B, 1>) {

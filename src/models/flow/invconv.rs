@@ -7,7 +7,6 @@ use burn::{
     tensor::{activation, linalg, ops::ConvOptions, Float as BurnFloat, TensorData},
     Tensor,
 };
-use std::sync::{Arc, Mutex};
 
 // Soft bound on `log_w_s` (log of `|diag(U)|` in the PLU factorisation).
 // Effective value is `LOG_W_S_MAX * tanh(raw / LOG_W_S_MAX)`, keeping pivots
@@ -289,7 +288,6 @@ impl InvConv1x1Config {
             log_w_s,
             w_s_sign,
             conv_options: Ignored(conv_options),
-            inverse_cache: Ignored(Arc::new(Mutex::new(None))),
         }
     }
 }
@@ -314,11 +312,6 @@ pub struct InvConv1x1<B: Backend> {
     /// or the kernel reconstruction flips signs on load.
     w_s_sign: Param<Tensor<B, 1>>,
     conv_options: Ignored<ConvOptions<2>>,
-    // Cache for the inverted kernel. Must be cleared (`clear_inverse_cache`) after any
-    // parameter update — there is no version counter on `Param` to auto-invalidate.
-    // Stored as `TensorData` (backend-independent) so the field type stays compatible
-    // with `Module` derive's autodiff `valid()` mapping.
-    inverse_cache: Ignored<Arc<Mutex<Option<TensorData>>>>,
 }
 
 impl<B: Backend> InvConv1x1<B> {
@@ -368,13 +361,6 @@ impl<B: Backend> InvConv1x1<B> {
 }
 
 impl<B: Backend> InvConv1x1<B> {
-    /// Drop any cached inverse kernel. Call after every optimizer step (or any other
-    /// mutation of `w_lu` / `log_w_s`) — otherwise `inverse` will keep returning the
-    /// kernel built from stale parameters.
-    pub fn clear_inverse_cache(&self) {
-        *self.inverse_cache.0.lock().unwrap() = None;
-    }
-
     /// Diagnostic: `(min, max)` of the effective (post-tanh) `log_w_s`.
     pub fn log_w_s_extrema(&self) -> (Tensor<B, 1>, Tensor<B, 1>) {
         let s = self.effective_log_w_s();
@@ -402,15 +388,8 @@ impl<B: Backend> InvConv1x1<B> {
 impl<B: Backend + TriangularInverse> InvConv1x1<B> {
     #[inline]
     fn construct_inverse_kernel(&self) -> Tensor<B, 2> {
-        let device = self.w_p.val().device();
-        let mut guard = self.inverse_cache.0.lock().unwrap();
-        if let Some(cached) = guard.as_ref() {
-            return Tensor::from_data(cached.clone(), &device);
-        }
         let w = self.construct_kernel();
-        let kernel = B::invert_matrix(w);
-        *guard = Some(kernel.to_data());
-        kernel
+        B::invert_matrix(w)
     }
 
     pub fn inverse(&self, input: Tensor<B, 4>) -> Tensor<B, 4> {
@@ -732,34 +711,6 @@ mod tests {
         assert!(
             inv_diff < 1e-6,
             "inverse kernel must match after save/load round-trip, diff={inv_diff}"
-        );
-    }
-
-    #[test]
-    fn test_inverse_cache_returns_stale_until_cleared() {
-        let device = Default::default();
-        let mut layer = make_layer(4);
-
-        let kernel_orig = layer.construct_inverse_kernel();
-
-        // Mutate log_w_s; without invalidation, the cache should still hand back the
-        // kernel computed from the original parameters.
-        let bumped = layer.log_w_s.val() + Tensor::full([4], 0.5, &device);
-        layer.log_w_s = Param::from_tensor(bumped);
-
-        let kernel_stale = layer.construct_inverse_kernel();
-        let stale_diff = max_abs_diff(kernel_orig.clone(), kernel_stale);
-        assert!(
-            stale_diff < 1e-9,
-            "cache should return identical stale kernel before clear, diff={stale_diff}"
-        );
-
-        layer.clear_inverse_cache();
-        let kernel_fresh = layer.construct_inverse_kernel();
-        let fresh_diff = max_abs_diff(kernel_orig, kernel_fresh);
-        assert!(
-            fresh_diff > 1e-3,
-            "cache should be invalidated after clear, diff={fresh_diff}"
         );
     }
 

@@ -21,10 +21,22 @@ pub use preprocess::{Dequantize, DequantizeConfig};
 pub(crate) fn squeeze2d<B: Backend>(tensor: Tensor<B, 4>, factor: usize) -> Tensor<B, 4> {
     let [batch, channels, height, width] = tensor.dims();
     assert!(height % factor == 0 && width % factor == 0);
-    let x = tensor.reshape([batch, channels, height / factor, factor, width / factor, factor]);
+    let x = tensor.reshape([
+        batch,
+        channels,
+        height / factor,
+        factor,
+        width / factor,
+        factor,
+    ]);
     // [B,C,H/f,f,W/f,f] → [B,C,f,f,H/f,W/f]
     let x = x.permute([0, 1, 3, 5, 2, 4]);
-    x.reshape([batch, channels * factor * factor, height / factor, width / factor])
+    x.reshape([
+        batch,
+        channels * factor * factor,
+        height / factor,
+        width / factor,
+    ])
 }
 
 /// `[B, C*f², H/f, W/f]` → `[B, C, H, W]` (depth-to-space; inverse of `squeeze2d`).
@@ -32,7 +44,11 @@ pub(crate) fn squeeze2d<B: Backend>(tensor: Tensor<B, 4>, factor: usize) -> Tens
 pub(crate) fn unsqueeze2d<B: Backend>(tensor: Tensor<B, 4>, factor: usize) -> Tensor<B, 4> {
     let [batch, channels, height, width] = tensor.dims();
     let f2 = factor * factor;
-    debug_assert_eq!(channels % f2, 0, "unsqueeze2d: channels not divisible by factor²");
+    debug_assert_eq!(
+        channels % f2,
+        0,
+        "unsqueeze2d: channels not divisible by factor²"
+    );
     let c_out = channels / f2;
     // [B, C*f², H/f, W/f] → [B, C, f, f, H/f, W/f]
     let x = tensor.reshape([batch, c_out, factor, factor, height, width]);
@@ -63,10 +79,7 @@ pub fn log_p_z<B: Backend>(zs: &[Tensor<B, 4>]) -> Tensor<B, 1> {
 }
 
 /// `log p(x) = Σ log|det J| + log p(z)`, shape `[B]`.
-pub fn log_likelihood<B: Backend>(
-    model: &Glow<B>,
-    x: Tensor<B, 4>,
-) -> Tensor<B, 1> {
+pub fn log_likelihood<B: Backend>(model: &Glow<B>, x: Tensor<B, 4>) -> Tensor<B, 1> {
     let (zs, log_det) = model.forward(x);
     log_det + log_p_z(&zs)
 }
@@ -194,7 +207,10 @@ impl<B: Backend> Glow<B> {
             }
         }
         zs.push(h);
-        (zs, total_log_det.expect("Glow must have at least one block"))
+        (
+            zs,
+            total_log_det.expect("Glow must have at least one block"),
+        )
     }
 }
 
@@ -203,27 +219,6 @@ pub struct GlowInvertDiagRow<B: Backend> {
     pub level: usize,
     pub step_idx: usize,
     pub diag: GlowStepDiag<B>,
-}
-
-impl<B: Backend> Glow<B> {
-    /// Walk the model exactly like `forward`, recording per-step parameter/activation extrema
-    /// useful for explaining `inverse` blow-up. Drops latents and logdets — diagnostics only.
-    pub fn collect_invert_diagnostics(&self, x: Tensor<B, 4>) -> Vec<GlowInvertDiagRow<B>> {
-        let mut h = x;
-        let mut rows = Vec::new();
-        for (l, block) in self.blocks.iter().enumerate() {
-            let (h2, step_rows) = block.forward_with_diag(h);
-            for (k, diag) in step_rows.into_iter().enumerate() {
-                rows.push(GlowInvertDiagRow { level: l, step_idx: k, diag });
-            }
-            h = h2;
-            if l < self.blocks.len() - 1 {
-                let (_, h2) = SplitBlock::forward(h);
-                h = h2;
-            }
-        }
-        rows
-    }
 }
 
 impl<B: Backend + TriangularInverse> Glow<B> {
@@ -288,8 +283,7 @@ mod tests {
 
     #[rstest]
     fn unsqueeze_then_squeeze_is_identity(device: NdArrayDevice) {
-        let input =
-            Tensor::<B, 4>::random([2, 12, 4, 4], Distribution::Normal(0.0, 1.0), &device);
+        let input = Tensor::<B, 4>::random([2, 12, 4, 4], Distribution::Normal(0.0, 1.0), &device);
         let unsqueezed = unsqueeze2d(input.clone(), 2);
         assert_eq!(unsqueezed.dims(), [2, 3, 8, 8]);
         let recovered = squeeze2d(unsqueezed, 2);
@@ -349,8 +343,7 @@ mod tests {
             .with_hidden_features(32)
             .init::<B>(&device);
 
-        let input =
-            Tensor::<B, 4>::random([2, 3, 8, 8], Distribution::Normal(0.0, 1.0), &device);
+        let input = Tensor::<B, 4>::random([2, 3, 8, 8], Distribution::Normal(0.0, 1.0), &device);
         let (zs, log_det) = model.forward(input.clone());
 
         // level 0 split: z_0=[2,6,4,4];  level 1 (last): z_1=[2,24,2,2]
@@ -379,8 +372,7 @@ mod tests {
             .with_hidden_features(32)
             .init::<B>(&device);
 
-        let input =
-            Tensor::<B, 4>::random([2, 3, 8, 8], Distribution::Normal(0.0, 1.0), &device);
+        let input = Tensor::<B, 4>::random([2, 3, 8, 8], Distribution::Normal(0.0, 1.0), &device);
         let (zs, _) = model.forward(input.clone());
         let reconstructed = model.inverse(zs);
         assert!(
@@ -400,8 +392,7 @@ mod tests {
             .with_coupling_type(CouplingType::Additive)
             .init::<B>(&device);
 
-        let input =
-            Tensor::<B, 4>::random([2, 3, 8, 8], Distribution::Normal(0.0, 1.0), &device);
+        let input = Tensor::<B, 4>::random([2, 3, 8, 8], Distribution::Normal(0.0, 1.0), &device);
         // NOTE: Glow log_det is the sum of ActNorm + InvConv + Coupling. Only the
         // coupling contribution is identically zero in additive mode; the ActNorm
         // and InvConv terms remain non-zero. We assert log_det finiteness here,
@@ -431,8 +422,7 @@ mod tests {
             .with_hidden_features(32)
             .with_coupling_type(CouplingType::Additive)
             .init::<B>(&device);
-        let input =
-            Tensor::<B, 4>::random([2, 3, 8, 8], Distribution::Normal(0.0, 5.0), &device);
+        let input = Tensor::<B, 4>::random([2, 3, 8, 8], Distribution::Normal(0.0, 5.0), &device);
         let (zs, _) = model.forward(input.clone());
         let recon = model.inverse(zs);
         let max_abs: f32 = (recon - input).abs().max().into_scalar();
@@ -458,11 +448,7 @@ mod tests {
             .with_hidden_features(16)
             .init::<AD>(&device);
 
-        let x = Tensor::<AD, 4>::random(
-            [2, 3, 8, 8],
-            Distribution::Uniform(0., 255.),
-            &device,
-        );
+        let x = Tensor::<AD, 4>::random([2, 3, 8, 8], Distribution::Uniform(0., 255.), &device);
         model.init_actnorm(x.clone());
 
         let logp = log_prob_pixels(&model, &deq, x.clone(), true);
@@ -543,11 +529,7 @@ mod tests {
 
         let micros: Vec<Tensor<AD, 4>> = (0..K)
             .map(|_| {
-                Tensor::<AD, 4>::random(
-                    [B, 3, 8, 8],
-                    Distribution::Uniform(0., 255.),
-                    &device,
-                )
+                Tensor::<AD, 4>::random([B, 3, 8, 8], Distribution::Uniform(0., 255.), &device)
             })
             .collect();
 
@@ -621,11 +603,8 @@ mod tests {
             .with_num_steps(2)
             .with_hidden_features(8)
             .init::<AD>(&device);
-        let init_x = Tensor::<AD, 4>::random(
-            [2, 3, 8, 8],
-            Distribution::Uniform(0., 255.),
-            &device,
-        );
+        let init_x =
+            Tensor::<AD, 4>::random([2, 3, 8, 8], Distribution::Uniform(0., 255.), &device);
         model.init_actnorm(deq.forward(init_x));
 
         let mut optim: Optim = AdamWConfig::new().init::<AD, Glow<AD>>();
@@ -638,19 +617,13 @@ mod tests {
         };
 
         // First step builds non-trivial Adam moments.
-        let x1 = Tensor::<AD, 4>::random(
-            [2, 3, 8, 8],
-            Distribution::Uniform(0., 255.),
-            &device,
-        );
+        let x1 = Tensor::<AD, 4>::random([2, 3, 8, 8], Distribution::Uniform(0., 255.), &device);
         model = step(&mut optim, model, &x1);
 
         // Save optim state to disk; load into a fresh optim; both must produce the
         // same model after a second step on identical inputs.
-        let tmp = std::env::temp_dir().join(format!(
-            "glow_rs_optim_roundtrip_{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("glow_rs_optim_roundtrip_{}", std::process::id()));
         let recorder = BinFileRecorder::<FullPrecisionSettings>::new();
         recorder
             .record(optim.to_record(), tmp.clone())
@@ -664,19 +637,11 @@ mod tests {
 
         let _ = std::fs::remove_file(tmp.with_extension("bin"));
 
-        let x2 = Tensor::<AD, 4>::random(
-            [2, 3, 8, 8],
-            Distribution::Uniform(0., 255.),
-            &device,
-        );
+        let x2 = Tensor::<AD, 4>::random([2, 3, 8, 8], Distribution::Uniform(0., 255.), &device);
         let model_a = step(&mut optim, model.clone(), &x2);
         let model_b = step(&mut optim_loaded, model, &x2);
 
-        let probe = Tensor::<AD, 4>::random(
-            [2, 3, 8, 8],
-            Distribution::Uniform(0., 255.),
-            &device,
-        );
+        let probe = Tensor::<AD, 4>::random([2, 3, 8, 8], Distribution::Uniform(0., 255.), &device);
         let nats_a: f32 = log_prob_pixels(&model_a, &deq, probe.clone(), false)
             .mean()
             .neg()
@@ -714,11 +679,7 @@ mod tests {
             .with_hidden_features(16)
             .init::<AD>(&device);
 
-        let x = Tensor::<AD, 4>::random(
-            [2, 3, 8, 8],
-            Distribution::Normal(0.0, 0.3),
-            &device,
-        );
+        let x = Tensor::<AD, 4>::random([2, 3, 8, 8], Distribution::Normal(0.0, 0.3), &device);
         model.init_actnorm(x.clone());
 
         let (zs, _) = model.forward(x.clone());
@@ -749,11 +710,7 @@ mod tests {
             .with_hidden_features(16)
             .init::<AD>(&device);
 
-        let x = Tensor::<AD, 4>::random(
-            [2, 3, 8, 8],
-            Distribution::Uniform(0., 255.),
-            &device,
-        );
+        let x = Tensor::<AD, 4>::random([2, 3, 8, 8], Distribution::Uniform(0., 255.), &device);
         model.init_actnorm(x.clone());
 
         let (x_cont, zs, log_p) = forward_for_training(&model, &deq, x.clone(), true);
@@ -770,7 +727,9 @@ mod tests {
             .collect();
         let x_tilde = model.inverse_autodiff(zs_perturbed);
         let diff = x_tilde - x_cont;
-        let fd_term = (diff.clone() * diff).mean().mul_scalar(lambda / (eps * eps));
+        let fd_term = (diff.clone() * diff)
+            .mean()
+            .mul_scalar(lambda / (eps * eps));
 
         let loss = nats_mean + fd_term;
         let grads = loss.backward();
@@ -780,15 +739,14 @@ mod tests {
 
         // Probe with a fresh batch and confirm the post-step model still produces finite
         // log-probabilities.
-        let probe = Tensor::<AD, 4>::random(
-            [2, 3, 8, 8],
-            Distribution::Uniform(0., 255.),
-            &device,
-        );
+        let probe = Tensor::<AD, 4>::random([2, 3, 8, 8], Distribution::Uniform(0., 255.), &device);
         let lp: f32 = log_prob_pixels(&model, &deq, probe, false)
             .mean()
             .into_scalar()
             .elem();
-        assert!(lp.is_finite(), "post-FD-step log-prob mean must be finite, got {lp}");
+        assert!(
+            lp.is_finite(),
+            "post-FD-step log-prob mean must be finite, got {lp}"
+        );
     }
 }

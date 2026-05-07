@@ -103,7 +103,6 @@ pub fn run_sampling(
     device: LibTorchDevice,
 ) -> Result<(), String> {
     crate::disable_tf32();
-    crate::enable_deterministic_kernels();
 
     // ── load metadata ─────────────────────────────────────────────────────────
     let meta_path = checkpoint.with_extension("meta.json");
@@ -153,7 +152,10 @@ pub fn run_sampling(
     // meaningful images because the latent distribution hasn't converged to N(0,1).
     // Instead, show reconstructions: forward the probe images through the model,
     // get exact zs, and inverse them. This reveals what the model has learned so far.
-    println!("Running forward → inverse reconstruction on {} probe images …", probe_batch.dims()[0]);
+    println!(
+        "Running forward → inverse reconstruction on {} probe images …",
+        probe_batch.dims()[0]
+    );
     let probe_y = dq.forward(probe_batch.clone());
     let probe_y_copy = probe_y.clone();
     let (probe_zs, _) = model.forward(probe_y);
@@ -162,7 +164,13 @@ pub fn run_sampling(
         let m: f32 = pz.clone().mean().into_scalar();
         let s: f32 = {
             let [_, c, _, _] = pz.dims();
-            pz.clone().swap_dims(0, 1).reshape([c, usize::MAX]).var(1).mean().sqrt().into_scalar()
+            pz.clone()
+                .swap_dims(0, 1)
+                .reshape([c, usize::MAX])
+                .var(1)
+                .mean()
+                .sqrt()
+                .into_scalar()
         };
         println!("  z[{i}] mean={m:.4} std={s:.4}");
     }
@@ -193,7 +201,10 @@ pub fn run_sampling(
         let y_min: f32 = probe_y_copy.clone().min().into_scalar();
         let y_max: f32 = probe_y_copy.clone().max().into_scalar();
         let y_mean: f32 = probe_y_copy.clone().mean().into_scalar();
-        let mse: f32 = (probe_y_copy - continuous.clone()).powf_scalar(2.0).mean().into_scalar();
+        let mse: f32 = (probe_y_copy - continuous.clone())
+            .powf_scalar(2.0)
+            .mean()
+            .into_scalar();
         println!("  original y:    mean={y_mean:.4}, range=[{y_min:.4},{y_max:.4}]");
         println!("  reconstructed: mean={cmean:.4}, range=[{cmin:.4},{cmax:.4}], mse={mse:.6}");
     }
@@ -205,11 +216,12 @@ pub fn run_sampling(
         let pmax: f32 = pixels.clone().max().into_scalar();
         let pmean: f32 = pixels.clone().mean().into_scalar();
         let orig_mean: f32 = probe_batch.clone().mean().into_scalar();
-        let pmse: f32 = (probe_batch.clone() - pixels.clone()).powf_scalar(2.0).mean().into_scalar();
+        let pmse: f32 = (probe_batch.clone() - pixels.clone())
+            .powf_scalar(2.0)
+            .mean()
+            .into_scalar();
         println!("  pixel recon:   mean={pmean:.1}, range=[{pmin:.0},{pmax:.0}], mse={pmse:.1} (orig_mean={orig_mean:.1})");
     }
-
-    let probe_batch_pixels = probe_batch;
 
     // ── save grid ─────────────────────────────────────────────────────────────
     let cols = (num_samples as f64).sqrt().ceil() as usize;
@@ -220,6 +232,7 @@ pub fn run_sampling(
 
     #[cfg(feature = "rerun")]
     {
+        let probe_batch_pixels = probe_batch;
         use rerun::RecordingStreamBuilder;
         if let Ok(rec) = RecordingStreamBuilder::new("glow-rs-sample").spawn() {
             rec.set_time_sequence("sample", 0_i64);
@@ -241,10 +254,7 @@ pub fn run_sampling(
             }
             let _ = rec.log(
                 "sample/info",
-                &rerun::TextLog::new(format!(
-                    "checkpoint step={}",
-                    meta.global_step
-                )),
+                &rerun::TextLog::new(format!("checkpoint step={}", meta.global_step)),
             );
         }
     }

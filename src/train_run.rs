@@ -16,9 +16,7 @@ use burn::tensor::Tensor;
 use crate::dataset::celeba::{CelebABatcher, CelebADataset};
 #[cfg(feature = "fd_reg")]
 use crate::models::flow::forward_for_training;
-use crate::models::flow::{
-    log_prob_pixels, Dequantize, DequantizeConfig, Glow, TriangularInverse,
-};
+use crate::models::flow::{Dequantize, DequantizeConfig, Glow, TriangularInverse};
 use crate::training_config::{SaveOptim, TrainingConfig};
 
 type TrainBackend = Autodiff<LibTorch>;
@@ -332,6 +330,58 @@ fn print_invert_diagnostics<B: Backend + TriangularInverse>(
     );
 }
 
+/// Per-sublayer round-trip diagnostic. Emits one line per sublayer plus a summary of which
+/// (level, step, kind) first crosses 1e-3 — the threshold above which f32 rounding alone
+/// can't explain the drift.
+fn print_roundtrip_diag<B: Backend + TriangularInverse>(
+    global_step: u64,
+    model: &Glow<B>,
+    y: Tensor<B, 4>,
+) {
+    let rows = model.roundtrip_diag(y);
+    let mut first_bad: Option<&crate::models::flow::RoundtripRow> = None;
+    let mut worst: Option<&crate::models::flow::RoundtripRow> = None;
+    for r in &rows {
+        if first_bad.is_none() && r.max_abs_err > 1e-3 && r.kind != "block" {
+            first_bad = Some(r);
+        }
+        if worst.map_or(true, |w| r.max_abs_err > w.max_abs_err) {
+            worst = Some(r);
+        }
+        let step_label = if r.step_idx == usize::MAX {
+            "*".to_string()
+        } else {
+            r.step_idx.to_string()
+        };
+        println!(
+            "step {global_step} roundtrip level={} step={} kind={} max_abs_err={:.3e}",
+            r.level, step_label, r.kind, r.max_abs_err
+        );
+    }
+    if let Some(r) = first_bad {
+        let step_label = if r.step_idx == usize::MAX {
+            "*".to_string()
+        } else {
+            r.step_idx.to_string()
+        };
+        println!(
+            "step {global_step} roundtrip first_bad: level={} step={} kind={} err={:.3e}",
+            r.level, step_label, r.kind, r.max_abs_err
+        );
+    }
+    if let Some(r) = worst {
+        let step_label = if r.step_idx == usize::MAX {
+            "*".to_string()
+        } else {
+            r.step_idx.to_string()
+        };
+        println!(
+            "step {global_step} roundtrip worst: level={} step={} kind={} err={:.3e}",
+            r.level, step_label, r.kind, r.max_abs_err
+        );
+    }
+}
+
 /// Logging, validation, invert check, best/step checkpoints. Returns whether validation ran.
 #[allow(clippy::too_many_arguments)]
 fn training_hooks_on_optimizer_step(
@@ -379,7 +429,8 @@ fn training_hooks_on_optimizer_step(
             );
             if cfg.run.invert_diagnostics {
                 let y = dequantize_infer.forward(invert_batches[0].clone());
-                print_invert_diagnostics(global_step, &model.valid(), y);
+                print_invert_diagnostics(global_step, &model.valid(), y.clone());
+                print_roundtrip_diag(global_step, &model.valid(), y);
             }
 
             let abort = !report.mean_mse.is_finite()
@@ -458,7 +509,6 @@ pub fn run_training(
     cli_lr_override: Option<f64>,
 ) -> Result<(), String> {
     crate::disable_tf32();
-    crate::enable_deterministic_kernels();
 
     let recorder = BinFileRecorder::<FullPrecisionSettings>::new();
     // Namespace checkpoints by coupling type so affine and additive runs don't
