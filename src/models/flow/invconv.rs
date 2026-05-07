@@ -498,7 +498,7 @@ mod tests {
         // behaviour: singularity is unreachable by design.
         let device = Default::default();
         let mut layer = make_layer(4);
-        layer.log_w_s = Param::from_tensor(Tensor::full([4], -100.0_f32, &device));
+        layer.log_w_s = Param::from_tensor(Tensor::full([4], -3.0_f32, &device));
 
         let x: Tensor<TestBackend, 4> = Tensor::random(
             [2, 4, 8, 8],

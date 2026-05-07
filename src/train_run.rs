@@ -292,13 +292,13 @@ fn training_hooks_on_optimizer_step(
     let mut ran_val = false;
     // Caller passes NaN when the windowed nats wasn't synced (skipping the host read on
     // non-log steps). Only emit the log line when a real value is available.
-    if global_step % cfg.run.log_every as u64 == 0 && train_nats.is_finite() {
+    if global_step.is_multiple_of(cfg.run.log_every as u64) && train_nats.is_finite() {
         let [_, c, h, w] = x.dims();
         let bpd = bits_per_dim_from_mean_nats(train_nats, c, h, w);
         println!("step {global_step} epoch {epoch} train_nats={train_nats:.4} train_bpd={bpd:.4}");
     }
 
-    if global_step % cfg.run.val_every as u64 == 0 {
+    if global_step.is_multiple_of(cfg.run.log_every as u64) {
         ran_val = true;
         let (mean_nats, mean_bpd) = evaluate(
             model,
@@ -364,7 +364,7 @@ fn training_hooks_on_optimizer_step(
         }
     }
 
-    if global_step % cfg.run.checkpoint_every as u64 == 0 {
+    if global_step.is_multiple_of(cfg.run.log_every as u64) {
         let base = checkpoint_dir.join(format!("step_{global_step:06}"));
         save_checkpoint(
             model,
@@ -583,7 +583,7 @@ pub fn run_training(
             model = optim.step(learning_rate, model, accumulated);
 
             // One host sync per optimizer step, and only when we actually need to log it.
-            let needs_log = global_step % cfg.run.log_every as u64 == 0;
+            let needs_log = global_step.is_multiple_of(cfg.run.log_every as u64);
             let train_nats = if needs_log {
                 let sum = nats_window.take().expect("non-empty window after step");
                 sum.into_scalar().elem::<f32>() * inv_accum
