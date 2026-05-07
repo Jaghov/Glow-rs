@@ -1,3 +1,4 @@
+#![cfg(feature = "backend-tch")]
 /// Diagnose condition numbers and parameter magnitudes of InvConv1x1 layers
 /// in the trained checkpoint.
 use burn::backend::libtorch::{LibTorch, LibTorchDevice};

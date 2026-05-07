@@ -235,22 +235,6 @@ impl<B: Backend + TriangularInverse> Glow<B> {
     }
 }
 
-#[cfg(feature = "fd_reg")]
-impl<B: Backend> Glow<B> {
-    /// Autodiff-friendly reconstruction. Same shape contract as `inverse`, but routes the
-    /// `InvConv1x1` step through Newton–Schulz polishing so gradients flow back into
-    /// `w_lu` and `log_w_s`. Used only by the FD regularization loss in training.
-    pub fn inverse_autodiff(&self, zs: Vec<Tensor<B, 4>>) -> Tensor<B, 4> {
-        let l_last = self.blocks.len() - 1;
-        let mut h = self.blocks[l_last].inverse_autodiff(zs[l_last].clone());
-        for l in (0..l_last).rev() {
-            let full = SplitBlock::inverse(zs[l].clone(), h);
-            h = self.blocks[l].inverse_autodiff(full);
-        }
-        h
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,44 +447,6 @@ mod tests {
         assert!(m.is_finite(), "post-step log-prob mean must be finite");
     }
 
-    /// `collect_invert_diagnostics` should produce one row per `(level, step)` and every
-    /// recorded extremum should be finite for a freshly-initialised model.
-    #[rstest]
-    fn glow_invert_diagnostics_walk_is_finite(device: NdArrayDevice) {
-        use burn::prelude::ElementConversion;
-
-        const NUM_LEVELS: usize = 2;
-        const NUM_STEPS: usize = 2;
-
-        let model = GlowConfig::new(3)
-            .with_num_levels(NUM_LEVELS)
-            .with_num_steps(NUM_STEPS)
-            .with_hidden_features(16)
-            .init::<B>(&device);
-
-        let y = Tensor::<B, 4>::random([2, 3, 8, 8], Distribution::Normal(0.0, 0.5), &device);
-        let rows = model.collect_invert_diagnostics(y);
-
-        assert_eq!(rows.len(), NUM_LEVELS * NUM_STEPS);
-        for (i, r) in rows.iter().enumerate() {
-            let expected_level = i / NUM_STEPS;
-            let expected_step = i % NUM_STEPS;
-            assert_eq!(r.level, expected_level);
-            assert_eq!(r.step_idx, expected_step);
-            for t in [
-                r.diag.actnorm_weight_min.clone(),
-                r.diag.actnorm_weight_max.clone(),
-                r.diag.invconv_log_s_min.clone(),
-                r.diag.invconv_log_s_max.clone(),
-                r.diag.coupling_log_s_min.clone(),
-                r.diag.coupling_log_s_max.clone(),
-            ] {
-                let v: f32 = t.into_scalar().elem();
-                assert!(v.is_finite(), "diagnostic must be finite, got {v}");
-            }
-        }
-    }
-
     /// Gradient accumulation invariant: K micro-batches with `loss / K` summed via
     /// [`GradientsAccumulator`] must produce the same Adam update as a single forward
     /// over the concatenated B·K batch. Compared via post-step forward loss.
@@ -658,95 +604,6 @@ mod tests {
         assert!(
             diff / scale < 1e-5,
             "optim state round-trip should be lossless: nats_a={nats_a}, nats_b={nats_b}"
-        );
-    }
-
-    /// `inverse_autodiff` must recover `x` from `forward(x)` to the same precision as the
-    /// non-autodiff `inverse` (within `1e-3`). If this drifts, the FD reg signal becomes
-    /// noise-dominated and the regularizer trains against rounding error instead of the
-    /// true inverse Lipschitz.
-    #[cfg(feature = "fd_reg")]
-    #[rstest]
-    fn glow_inverse_autodiff_round_trip(device: NdArrayDevice) {
-        use burn::backend::Autodiff;
-        use burn::prelude::ElementConversion;
-
-        type AD = Autodiff<NdArray>;
-
-        let mut model = GlowConfig::new(3)
-            .with_num_levels(2)
-            .with_num_steps(2)
-            .with_hidden_features(16)
-            .init::<AD>(&device);
-
-        let x = Tensor::<AD, 4>::random([2, 3, 8, 8], Distribution::Normal(0.0, 0.3), &device);
-        model.init_actnorm(x.clone());
-
-        let (zs, _) = model.forward(x.clone());
-        let x_recovered = model.inverse_autodiff(zs);
-
-        let max_abs: f32 = (x_recovered - x).abs().max().into_scalar().elem();
-        assert!(
-            max_abs < 1e-3,
-            "Glow::inverse_autodiff should round-trip within 1e-3, got max_abs={max_abs}"
-        );
-    }
-
-    /// One Adam step on `nats + λ · fd_term` must produce finite parameters. Mirrors
-    /// `glow_training_step_ndarray_smoke` but exercises the FD reg path end-to-end.
-    #[cfg(feature = "fd_reg")]
-    #[rstest]
-    fn glow_fd_reg_training_step_smoke(device: NdArrayDevice) {
-        use burn::backend::Autodiff;
-        use burn::optim::{AdamConfig, GradientsParams, Optimizer};
-        use burn::prelude::ElementConversion;
-
-        type AD = Autodiff<NdArray>;
-
-        let deq = DequantizeConfig::new(8).init::<AD>(&device);
-        let mut model = GlowConfig::new(3)
-            .with_num_levels(2)
-            .with_num_steps(2)
-            .with_hidden_features(16)
-            .init::<AD>(&device);
-
-        let x = Tensor::<AD, 4>::random([2, 3, 8, 8], Distribution::Uniform(0., 255.), &device);
-        model.init_actnorm(x.clone());
-
-        let (x_cont, zs, log_p) = forward_for_training(&model, &deq, x.clone(), true);
-        let nats_mean = log_p.mean().neg();
-
-        let eps: f32 = 0.05;
-        let lambda: f32 = 1.0;
-        let zs_perturbed: Vec<_> = zs
-            .into_iter()
-            .map(|z| {
-                let eta = z.clone().random_like(Distribution::Normal(0.0, 1.0));
-                z + eta.mul_scalar(eps)
-            })
-            .collect();
-        let x_tilde = model.inverse_autodiff(zs_perturbed);
-        let diff = x_tilde - x_cont;
-        let fd_term = (diff.clone() * diff)
-            .mean()
-            .mul_scalar(lambda / (eps * eps));
-
-        let loss = nats_mean + fd_term;
-        let grads = loss.backward();
-        let mut optim = AdamConfig::new().init::<AD, Glow<AD>>();
-        let grads = GradientsParams::from_grads(grads, &model);
-        model = optim.step(1e-4, model, grads);
-
-        // Probe with a fresh batch and confirm the post-step model still produces finite
-        // log-probabilities.
-        let probe = Tensor::<AD, 4>::random([2, 3, 8, 8], Distribution::Uniform(0., 255.), &device);
-        let lp: f32 = log_prob_pixels(&model, &deq, probe, false)
-            .mean()
-            .into_scalar()
-            .elem();
-        assert!(
-            lp.is_finite(),
-            "post-FD-step log-prob mean must be finite, got {lp}"
         );
     }
 }

@@ -14,8 +14,6 @@ use burn::record::{BinFileRecorder, FullPrecisionSettings, Recorder};
 use burn::tensor::Tensor;
 
 use crate::dataset::celeba::{CelebABatcher, CelebADataset};
-#[cfg(feature = "fd_reg")]
-use crate::models::flow::forward_for_training;
 use crate::models::flow::{Dequantize, DequantizeConfig, Glow, TriangularInverse};
 use crate::training_config::{SaveOptim, TrainingConfig};
 

@@ -1,3 +1,4 @@
+#![cfg(feature = "backend-tch")]
 /// Test round-trip on LibTorch backend to isolate GPU vs CPU precision.
 use burn::backend::libtorch::LibTorch;
 use burn::tensor::{Distribution, Tensor};

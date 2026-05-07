@@ -1,3 +1,4 @@
+#![cfg(feature = "backend-tch")]
 /// Load the actual trained checkpoint and test round-trip on both CPU and GPU.
 use burn::backend::libtorch::{LibTorch, LibTorchDevice};
 use burn::prelude::Module;
@@ -26,11 +27,7 @@ fn test_roundtrip(device: LibTorchDevice, label: &str) {
         .load_file(checkpoint, &recorder, &device)
         .expect("load checkpoint");
 
-    let input = Tensor::<B, 4>::random(
-        [1, 3, 128, 128],
-        Distribution::Normal(0.0, 0.3),
-        &device,
-    );
+    let input = Tensor::<B, 4>::random([1, 3, 128, 128], Distribution::Normal(0.0, 0.3), &device);
 
     let (zs, _) = model.forward(input.clone());
     let recon = model.inverse(zs);

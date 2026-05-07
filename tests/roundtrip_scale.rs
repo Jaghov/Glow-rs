@@ -1,3 +1,4 @@
+#![cfg(feature = "backend-ndarray")]
 /// Test round-trip error at increasing scale to find where drift appears.
 use burn::backend::NdArray;
 use burn::tensor::{Distribution, Tensor};
