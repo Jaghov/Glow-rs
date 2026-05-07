@@ -41,11 +41,6 @@ cli = ["training", "dep:clap"]
 # Live training visualisation.
 rerun = ["training", "dep:rerun"]
 
-# Finite-differences regulariser (Behrmann/Vicol "Exploding Inverses"). Enables a
-# differentiable inverse path on `InvConv1x1` (per-factor Newton-Schulz on L and U)
-# plus the `[regularization]` TOML block. Roughly doubles activation memory during
-# training; see CLAUDE.md.
-fd_reg = []
 
 [dependencies]
 # Library core. Backend impls (`ndarray`, `tch`, `cuda`, `wgpu`) are gated behind

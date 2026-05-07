@@ -43,12 +43,4 @@ checkpoint_every     = 1000
 val_every            = 1000
 log_every            = 100
 
-# Finite-differences regularizer ("Exploding Inverses", Behrmann/Vicol). Only read when
-# the binary is built with `--features fd_reg`; without the feature this section is
-# silently ignored. FD reg roughly doubles activation memory on the steps it fires.
-# [regularization]
-# fd_lambda        = 1.0
-# fd_warmup_steps  = 5000
-# fd_epsilon       = 0.05
-# fd_every_n_steps = 1
 

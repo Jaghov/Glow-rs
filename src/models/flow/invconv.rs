@@ -245,7 +245,7 @@ impl TriangularInverse for burn::backend::LibTorch {
 // the inner LibTorch tensor, runs the fp64 inversion there, and re-wraps via
 // `Tensor::from_inner` (no-grad).
 #[cfg(feature = "backend-tch")]
-impl TriangularInverse for backend::Autodiff<burn::backend::LibTorch> {
+impl TriangularInverse for burn::backend::Autodiff<burn::backend::LibTorch> {
     fn invert_matrix(w: Tensor<Self, 2>) -> Tensor<Self, 2> {
         let inner = w.inner();
         let inv = <burn::backend::LibTorch as TriangularInverse>::invert_matrix(inner);

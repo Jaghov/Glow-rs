@@ -42,8 +42,6 @@ cargo run --features rerun -- train
 # Switch to additive (NICE-style) coupling:
 cargo run -- train --coupling-type additive
 
-# Enable finite-differences invertibility regulariser (Vicol et al., "Exploding Inverses"):
-cargo run --features fd_reg -- train --config train.toml
 ```
 
 ### Example `train.toml`
@@ -75,13 +73,6 @@ checkpoint_dir   = "checkpoints"
 checkpoint_every = 1000
 val_every        = 500
 
-# Optional: only used when the binary is built with --features fd_reg
-[regularization]
-fd_lambda        = 0.0    # weight on the FD invertibility penalty (0 = disabled)
-fd_warmup_steps  = 1000   # linearly ramp lambda from 0 over this many steps
-fd_epsilon       = 1e-2   # finite-difference probe scale
-fd_every_n_steps = 1      # apply the penalty every N optimiser steps (1 = every step)
-```
 
 #### Coupling types
 
@@ -107,9 +98,6 @@ Checkpoints are namespaced by coupling type so affine and additive runs can shar
 
 To resume, point `--resume` at the nested base path, e.g. `--resume checkpoints/additive/latest`. The two coupling types are not weight-compatible (different conv-block output widths), and the meta sidecar records the type so a mismatched resume aborts with a clear error.
 
-#### Optional FD invertibility regulariser (`--features fd_reg`)
-
-Enables a finite-differences penalty on the inverse network's Lipschitz constant (Vicol et al., *Exploding Inverses*). Adds memory for one extra autodiff inverse pass per FD step but actively curbs invconv/coupling blow-ups during training. Configure under `[regularization]`; build with `cargo build --features fd_reg`.
 
 #### Migrating pre-additive checkpoints
 

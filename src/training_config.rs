@@ -17,36 +17,6 @@ pub struct TrainingConfig {
     pub optimizer: OptimizerSettings,
     pub data: DataSettings,
     pub run: RunSettings,
-    /// Finite-differences regularizer (Behrmann/Vicol "Exploding Inverses"). Penalises the
-    /// inverse Lipschitz of the full Glow flow during training. Available only with the
-    /// `fd_reg` cargo feature; absent on default builds.
-    #[cfg(feature = "fd_reg")]
-    pub regularization: RegularizationSettings,
-}
-
-/// Finite-differences regularizer parameters. Only present with `fd_reg` feature.
-#[cfg(feature = "fd_reg")]
-#[derive(Config, Debug)]
-pub struct RegularizationSettings {
-    /// Target FD coefficient applied after warmup. `0.0` disables the FD term even when the
-    /// feature is compiled in (useful for A/B comparisons against a non-FD baseline without
-    /// rebuilding).
-    #[config(default = "1.0_f32")]
-    pub fd_lambda: f32,
-    /// Number of optimiser steps over which `lambda` ramps linearly from `0` to `fd_lambda`.
-    /// Without warmup the FD term dominates the loss on a freshly-initialised model and can
-    /// destabilise training before the NLL has a chance to take effect.
-    #[config(default = "5000")]
-    pub fd_warmup_steps: u64,
-    /// Perturbation magnitude `ε` used in `f⁻¹(z + ε·η)`. Recommended range 0.01–0.1.
-    /// Smaller `ε` is more faithful to the local Jacobian but suffers from f32 noise; larger
-    /// `ε` stretches the linearisation and starts measuring non-local inverse behaviour.
-    #[config(default = "0.05_f32")]
-    pub fd_epsilon: f32,
-    /// Apply the FD term on every Nth optimiser step. `1` = every step (highest cost). Values
-    /// >1 throttle the activation memory cost (FD ≈ doubles activations on the steps it runs).
-    #[config(default = "1")]
-    pub fd_every_n_steps: u64,
 }
 
 #[derive(Config, Debug)]
@@ -164,22 +134,6 @@ struct TrainingConfigToml {
     data: Option<DataSettingsToml>,
     #[serde(default)]
     run: Option<RunSettingsToml>,
-    #[cfg(feature = "fd_reg")]
-    #[serde(default)]
-    regularization: Option<RegularizationSettingsToml>,
-}
-
-#[cfg(feature = "fd_reg")]
-#[derive(Default, Deserialize)]
-struct RegularizationSettingsToml {
-    #[serde(default)]
-    fd_lambda: Option<f32>,
-    #[serde(default)]
-    fd_warmup_steps: Option<u64>,
-    #[serde(default)]
-    fd_epsilon: Option<f32>,
-    #[serde(default)]
-    fd_every_n_steps: Option<u64>,
 }
 
 #[derive(Default, Deserialize)]
@@ -283,23 +237,7 @@ impl TrainingConfigToml {
             optimizer: merge_optimizer_settings(self.optimizer),
             data: merge_data_settings(self.data),
             run: merge_run_settings(self.run)?,
-            #[cfg(feature = "fd_reg")]
-            regularization: merge_regularization_settings(self.regularization),
         })
-    }
-}
-
-#[cfg(feature = "fd_reg")]
-fn merge_regularization_settings(
-    raw: Option<RegularizationSettingsToml>,
-) -> RegularizationSettings {
-    let b = RegularizationSettings::new();
-    let r = raw.unwrap_or_default();
-    RegularizationSettings {
-        fd_lambda: r.fd_lambda.unwrap_or(b.fd_lambda),
-        fd_warmup_steps: r.fd_warmup_steps.unwrap_or(b.fd_warmup_steps),
-        fd_epsilon: r.fd_epsilon.unwrap_or(b.fd_epsilon),
-        fd_every_n_steps: r.fd_every_n_steps.unwrap_or(b.fd_every_n_steps),
     }
 }
 
@@ -366,8 +304,6 @@ impl Default for TrainingConfig {
             optimizer: OptimizerSettings::new(),
             data: DataSettings::new(),
             run: RunSettings::new(),
-            #[cfg(feature = "fd_reg")]
-            regularization: RegularizationSettings::new(),
         }
     }
 }

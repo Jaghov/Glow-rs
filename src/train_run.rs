@@ -271,115 +271,6 @@ fn build_invert_check_batches(
         .collect()
 }
 
-/// Print compact per-step invert diagnostics: largest |coupling log_s| (the leading cause
-/// of f32 cancellation in `inverse`), plus ActNorm and InvConv parameter ranges. One forward
-/// over `y`; only call when invertibility metrics already justify the cost.
-fn print_invert_diagnostics<B: Backend + TriangularInverse>(
-    global_step: u64,
-    model: &Glow<B>,
-    y: Tensor<B, 4>,
-) {
-    let rows = model.collect_invert_diagnostics(y);
-    let mut worst_abs_log_s = f32::NEG_INFINITY;
-    let mut worst_loc = (0usize, 0usize);
-    let mut an_w_lo = f32::INFINITY;
-    let mut an_w_hi = f32::NEG_INFINITY;
-    let mut ic_s_lo = f32::INFINITY;
-    let mut ic_s_hi = f32::NEG_INFINITY;
-    let mut worst_shift = f32::NEG_INFINITY;
-    let mut worst_shift_loc = (0usize, 0usize);
-    for r in &rows {
-        let cp_min: f32 = r.diag.coupling_log_s_min.clone().into_scalar().elem();
-        let cp_max: f32 = r.diag.coupling_log_s_max.clone().into_scalar().elem();
-        let max_abs = cp_min.abs().max(cp_max.abs());
-        if max_abs > worst_abs_log_s {
-            worst_abs_log_s = max_abs;
-            worst_loc = (r.level, r.step_idx);
-        }
-        let shift_abs: f32 = r.diag.coupling_shift_abs_max.clone().into_scalar().elem();
-        if shift_abs > worst_shift {
-            worst_shift = shift_abs;
-            worst_shift_loc = (r.level, r.step_idx);
-        }
-        an_w_lo = an_w_lo.min(
-            r.diag
-                .actnorm_weight_min
-                .clone()
-                .into_scalar()
-                .elem::<f32>(),
-        );
-        an_w_hi = an_w_hi.max(
-            r.diag
-                .actnorm_weight_max
-                .clone()
-                .into_scalar()
-                .elem::<f32>(),
-        );
-        ic_s_lo = ic_s_lo.min(r.diag.invconv_log_s_min.clone().into_scalar().elem::<f32>());
-        ic_s_hi = ic_s_hi.max(r.diag.invconv_log_s_max.clone().into_scalar().elem::<f32>());
-    }
-    println!(
-        "step {global_step} invert_diag: \
-         coupling_max|log_s|={worst_abs_log_s:.3} @ (level={}, step={}); \
-         coupling_max|shift|={worst_shift:.3} @ (level={}, step={}); \
-         actnorm_weight=[{an_w_lo:.3},{an_w_hi:.3}]; \
-         invconv_log_w_s=[{ic_s_lo:.3},{ic_s_hi:.3}]",
-        worst_loc.0, worst_loc.1, worst_shift_loc.0, worst_shift_loc.1,
-    );
-}
-
-/// Per-sublayer round-trip diagnostic. Emits one line per sublayer plus a summary of which
-/// (level, step, kind) first crosses 1e-3 — the threshold above which f32 rounding alone
-/// can't explain the drift.
-fn print_roundtrip_diag<B: Backend + TriangularInverse>(
-    global_step: u64,
-    model: &Glow<B>,
-    y: Tensor<B, 4>,
-) {
-    let rows = model.roundtrip_diag(y);
-    let mut first_bad: Option<&crate::models::flow::RoundtripRow> = None;
-    let mut worst: Option<&crate::models::flow::RoundtripRow> = None;
-    for r in &rows {
-        if first_bad.is_none() && r.max_abs_err > 1e-3 && r.kind != "block" {
-            first_bad = Some(r);
-        }
-        if worst.map_or(true, |w| r.max_abs_err > w.max_abs_err) {
-            worst = Some(r);
-        }
-        let step_label = if r.step_idx == usize::MAX {
-            "*".to_string()
-        } else {
-            r.step_idx.to_string()
-        };
-        println!(
-            "step {global_step} roundtrip level={} step={} kind={} max_abs_err={:.3e}",
-            r.level, step_label, r.kind, r.max_abs_err
-        );
-    }
-    if let Some(r) = first_bad {
-        let step_label = if r.step_idx == usize::MAX {
-            "*".to_string()
-        } else {
-            r.step_idx.to_string()
-        };
-        println!(
-            "step {global_step} roundtrip first_bad: level={} step={} kind={} err={:.3e}",
-            r.level, step_label, r.kind, r.max_abs_err
-        );
-    }
-    if let Some(r) = worst {
-        let step_label = if r.step_idx == usize::MAX {
-            "*".to_string()
-        } else {
-            r.step_idx.to_string()
-        };
-        println!(
-            "step {global_step} roundtrip worst: level={} step={} kind={} err={:.3e}",
-            r.level, step_label, r.kind, r.max_abs_err
-        );
-    }
-}
-
 /// Logging, validation, invert check, best/step checkpoints. Returns whether validation ran.
 #[allow(clippy::too_many_arguments)]
 fn training_hooks_on_optimizer_step(
@@ -425,11 +316,6 @@ fn training_hooks_on_optimizer_step(
                 "step {global_step} invert_pixel_mse={:.6} p99_abs_err={:.4}",
                 report.mean_mse, report.p99_abs
             );
-            if cfg.run.invert_diagnostics {
-                let y = dequantize_infer.forward(invert_batches[0].clone());
-                print_invert_diagnostics(global_step, &model.valid(), y.clone());
-                print_roundtrip_diag(global_step, &model.valid(), y);
-            }
 
             let abort = !report.mean_mse.is_finite()
                 || cfg
@@ -652,12 +538,6 @@ pub fn run_training(
     let mut micro_ix = 0usize;
     // On-device running sum of per-micro-batch mean nats; only synced to host when we log.
     let mut nats_window: Option<Tensor<LibTorch, 1>> = None;
-    // Same accumulator for the FD reg term (when enabled); summed only over micro-batches
-    // where FD actually fired, so the printed value reflects the accumulated contribution.
-    #[cfg(feature = "fd_reg")]
-    let mut fd_window: Option<Tensor<LibTorch, 1>> = None;
-    #[cfg(feature = "fd_reg")]
-    let mut fd_window_count: u32 = 0;
 
     for epoch in start_epoch..cfg.run.max_epochs {
         for batch in train_loader.iter() {
@@ -673,41 +553,7 @@ pub fn run_training(
                 pending_actnorm = false;
             }
 
-            // Resolve FD reg schedule once per micro-batch. Decision is keyed off the
-            // *upcoming* optimiser step (`global_step + 1`) so that all micro-batches
-            // within an accumulation window share the same FD on/off state.
-            #[cfg(feature = "fd_reg")]
-            let (fd_lambda_eff, do_fd) = {
-                let next_step = global_step + 1;
-                let warmup = cfg.regularization.fd_warmup_steps.max(1);
-                let warmup_factor = (next_step as f32 / warmup as f32).min(1.0);
-                let lambda = cfg.regularization.fd_lambda * warmup_factor;
-                let every_n = cfg.regularization.fd_every_n_steps.max(1);
-                let do_fd = lambda > 0.0 && (next_step % every_n == 0);
-                (lambda, do_fd)
-            };
-
-            // Forward pass; the FD branch (when enabled & active) reuses `x_cont` and
-            // `zs` to avoid a second `model.forward`. When FD is disabled at compile
-            // time we call `log_prob_pixels` directly so the side outputs of
-            // `forward_for_training` aren't even allocated as named bindings.
-            #[cfg(feature = "fd_reg")]
-            let (fd_inputs, logp) = {
-                let (x_cont, zs, logp) =
-                    forward_for_training(&model, &dequantize_train, x.clone(), true);
-                if do_fd {
-                    (Some((x_cont, zs)), logp)
-                } else {
-                    // Drop x_cont and zs explicitly so the only handles held into the
-                    // autodiff graph past this line are the ones backward() actually
-                    // walks (via `logp`). Functionally equivalent to letting them go
-                    // out of scope at end of body, but signals intent.
-                    drop((x_cont, zs));
-                    (None, logp)
-                }
-            };
-            #[cfg(not(feature = "fd_reg"))]
-            let logp = log_prob_pixels(&model, &dequantize_train, x.clone(), true);
+            let logp = crate::prelude::log_prob_pixels(&model, &dequantize_train, x.clone(), true);
 
             let nats_mean = logp.mean().neg();
 
@@ -719,39 +565,6 @@ pub fn run_training(
                 Some(prev) => prev + nats_value,
             });
 
-            #[cfg(feature = "fd_reg")]
-            let fd_term = if let Some((x_cont, zs)) = fd_inputs {
-                use burn::tensor::Distribution;
-                let eps = cfg.regularization.fd_epsilon;
-                let zs_perturbed: Vec<_> = zs
-                    .into_iter()
-                    .map(|z| {
-                        let eta = z.clone().random_like(Distribution::Normal(0.0, 1.0));
-                        z + eta.mul_scalar(eps)
-                    })
-                    .collect();
-                let x_tilde = model.inverse_autodiff(zs_perturbed);
-                let diff = x_tilde - x_cont;
-                // mean ||x̃ − x||² · (λ / ε²); absorbing 1/ε² keeps λ on a Hutchinson-like scale.
-                let scale = fd_lambda_eff / (eps * eps);
-                let term = (diff.clone() * diff).mean().mul_scalar(scale);
-                let term_value = term.clone().inner();
-                fd_window = Some(match fd_window.take() {
-                    None => term_value,
-                    Some(prev) => prev + term_value,
-                });
-                fd_window_count += 1;
-                Some(term)
-            } else {
-                None
-            };
-
-            #[cfg(feature = "fd_reg")]
-            let total_loss = match fd_term {
-                Some(t) => nats_mean.clone() + t,
-                None => nats_mean.clone(),
-            };
-            #[cfg(not(feature = "fd_reg"))]
             let total_loss = nats_mean.clone();
 
             let loss = total_loss.mul_scalar(inv_accum);
@@ -778,30 +591,6 @@ pub fn run_training(
                 nats_window = None;
                 f32::NAN
             };
-
-            #[cfg(feature = "fd_reg")]
-            {
-                // The FD window aggregates `fd_window_count` per-microbatch FD terms
-                // until the next log step. Three cases:
-                //   1. needs_log: drain the window (sync to host once, print, reset).
-                //   2. !needs_log && do_fd: a fresh FD term was just appended this
-                //      step; keep accumulating, do not reset count.
-                //   3. !needs_log && !do_fd: no FD term this step. The window is still
-                //      valid (count matches sum) — do nothing.
-                // The earlier "reset count when window is None" branch existed only to
-                // recover from a programming mistake that can no longer happen with
-                // the current code path; dropped for clarity.
-                if needs_log {
-                    if let Some(sum) = fd_window.take() {
-                        let count = fd_window_count.max(1) as f32;
-                        let mean = sum.into_scalar().elem::<f32>() / count;
-                        println!(
-                            "step {global_step} fd_term={mean:.6} fd_lambda={fd_lambda_eff:.6} fd_fired={fd_window_count}/{accum_steps}"
-                        );
-                    }
-                    fd_window_count = 0;
-                }
-            }
 
             #[cfg_attr(not(feature = "rerun"), allow(unused_variables))]
             let ran_val = training_hooks_on_optimizer_step(
@@ -844,11 +633,6 @@ pub fn run_training(
             let _ = grad_accum.grads();
             micro_ix = 0;
             nats_window = None;
-            #[cfg(feature = "fd_reg")]
-            {
-                fd_window = None;
-                fd_window_count = 0;
-            }
         }
 
         let base = checkpoint_dir.join("latest");
@@ -946,7 +730,7 @@ fn evaluate(
         let d = x.dims();
         c_hw = (d[1], d[2], d[3]);
         let x_inner = x.inner();
-        let logp = log_prob_pixels(&model_eval, dequantize, x_inner, false);
+        let logp = crate::prelude::log_prob_pixels(&model_eval, dequantize, x_inner, false);
         let b = logp.dims()[0];
         let batch_sum: f32 = (-logp).sum().into_scalar().elem();
         sum_nats += f64::from(batch_sum);

@@ -94,8 +94,6 @@ type MappedDataset = MapperDataset<SqliteDataset<CelebAItemRaw>, BytesToImage, C
 pub struct CelebADataset {
     /// The underlying lazily-mapped SQLite dataset.
     dataset: MappedDataset,
-    /// The transformation applied to each raw item on access.
-    transformation: BytesToImage,
 }
 
 impl CelebADataset {
@@ -130,10 +128,7 @@ impl CelebADataset {
         let map = BytesToImage;
         let dataset = MapperDataset::new(dataset, map.clone());
 
-        CelebADataset {
-            dataset,
-            transformation: map,
-        }
+        CelebADataset { dataset }
     }
 }
 

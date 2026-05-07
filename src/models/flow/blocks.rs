@@ -47,17 +47,21 @@ impl<B: Backend> GlowStep<B> {
         self.actnorm.init(example);
     }
 
-    pub fn actnorm_ref(&self) -> &ActNorm<B> { &self.actnorm }
-    pub fn invconv_ref(&self) -> &InvConv1x1<B> { &self.invconv }
-    pub fn coupling_ref(&self) -> &Coupling<B> { &self.coupling }
+    pub fn actnorm_ref(&self) -> &ActNorm<B> {
+        &self.actnorm
+    }
+    pub fn invconv_ref(&self) -> &InvConv1x1<B> {
+        &self.invconv
+    }
+    pub fn coupling_ref(&self) -> &Coupling<B> {
+        &self.coupling
+    }
 
     pub fn forward(&self, x: Tensor<B, 4>) -> (Tensor<B, 4>, Tensor<B, 1>) {
         let [b, c, _, _] = x.dims();
         let (x, ld1) = self.actnorm.forward(x);
         // ActNorm returns one `(h*w)*weight[c]` per channel; reduce to a scalar per batch row.
-        let ld1 = ld1
-            .reshape([b, c])
-            .sum_dims_squeeze::<1, _>(&[1]);
+        let ld1 = ld1.reshape([b, c]).sum_dims_squeeze::<1, _>(&[1]);
         let (x, ld2) = self.invconv.forward(x);
         let (x, ld3) = self.coupling.forward(x);
         let log_det = ld1 + ld2 + ld3;
@@ -69,18 +73,6 @@ impl<B: Backend + TriangularInverse> GlowStep<B> {
     pub fn inverse(&self, y: Tensor<B, 4>) -> Tensor<B, 4> {
         let y = self.coupling.inverse(y);
         let y = self.invconv.inverse(y);
-        self.actnorm.inverse(y)
-    }
-}
-
-#[cfg(feature = "fd_reg")]
-impl<B: Backend> GlowStep<B> {
-    /// Differentiable inverse for FD regularization. Identical structure to `inverse`,
-    /// but routes `InvConv1x1` through its autodiff path instead of host substitution.
-    /// Coupling and ActNorm inverses are already autodiff-clean (closed-form algebra).
-    pub fn inverse_autodiff(&self, y: Tensor<B, 4>) -> Tensor<B, 4> {
-        let y = self.coupling.inverse(y);
-        let y = self.invconv.inverse_autodiff(y);
         self.actnorm.inverse(y)
     }
 }
@@ -214,7 +206,9 @@ impl<B: Backend> GlowBlock<B> {
         }
     }
 
-    pub fn steps_for_diag(&self) -> &[GlowStep<B>] { &self.steps }
+    pub fn steps_for_diag(&self) -> &[GlowStep<B>] {
+        &self.steps
+    }
 
     /// `[B, C_in, H, W]` → `([B, 4*C_in, H/2, W/2], log_det [B])`
     pub fn forward(&self, x: Tensor<B, 4>) -> (Tensor<B, 4>, Tensor<B, 1>) {
@@ -228,7 +222,10 @@ impl<B: Backend> GlowBlock<B> {
                 Some(acc) => acc + ld,
             });
         }
-        (h, log_det_acc.expect("GlowBlock must have at least one step"))
+        (
+            h,
+            log_det_acc.expect("GlowBlock must have at least one step"),
+        )
     }
 }
 
@@ -238,18 +235,6 @@ impl<B: Backend + TriangularInverse> GlowBlock<B> {
         let mut h = y;
         for step in self.steps.iter().rev() {
             h = step.inverse(h);
-        }
-        super::unsqueeze2d(h, 2)
-    }
-}
-
-#[cfg(feature = "fd_reg")]
-impl<B: Backend> GlowBlock<B> {
-    /// Autodiff-friendly inverse used by FD regularization.
-    pub fn inverse_autodiff(&self, y: Tensor<B, 4>) -> Tensor<B, 4> {
-        let mut h = y;
-        for step in self.steps.iter().rev() {
-            h = step.inverse_autodiff(h);
         }
         super::unsqueeze2d(h, 2)
     }
@@ -307,11 +292,7 @@ mod tests {
             .with_hidden_features(32)
             .init(&device);
 
-        let input = Tensor::<B, 4>::random(
-            [4, 3, 8, 8],
-            Distribution::Uniform(-0.5, 0.5),
-            &device,
-        );
+        let input = Tensor::<B, 4>::random([4, 3, 8, 8], Distribution::Uniform(-0.5, 0.5), &device);
         block.init_actnorm(input.clone());
         let (z, log_det) = block.forward(input);
 
@@ -337,11 +318,7 @@ mod tests {
     #[rstest]
     fn glow_step_log_det_not_all_zero(device: NdArrayDevice) {
         let step = GlowStepConfig::new(12).init(&device);
-        let input = Tensor::<B, 4>::random(
-            [2, 12, 8, 8],
-            Distribution::Normal(0.0, 1.0),
-            &device,
-        );
+        let input = Tensor::<B, 4>::random([2, 12, 8, 8], Distribution::Normal(0.0, 1.0), &device);
         let (_, log_det) = step.forward(input);
         let sum: f32 = log_det
             .into_data()
